@@ -37,6 +37,16 @@ Antes de código funcional:
 Cobertura mínima en `domain/` y `application/`: 80%.
 
 ## Responsividad
-- Breakpoints: móvil `<600`, tablet `600–1024`, desktop `>1024`.
-- Web: paneles laterales fijos (Herramientas izq., Propiedades der.).
-- Móvil: `Drawer` (izq.), `EndDrawer`/`BottomSheet` (der.).
+- Breakpoints (Material 3): compacto `<600`, medio `600–1024`, expandido `>1024`.
+- Compacto: ambos paneles colapsados → `Drawer` (herramientas) y `EndDrawer` (propiedades).
+- Medio: panel de herramientas fijo; propiedades vía `EndDrawer`.
+- Expandido: panel de herramientas (izq.) y de propiedades (der.) fijos, con lienzo central.
+- El corte se calcula **una sola vez** con `LayoutBuilder` en `MainLayout`; ningún widget hijo
+  duplica la lógica de breakpoints.
+
+## Decisiones del proyecto
+- Estado: Riverpod.
+- Esquema Supabase: `profiles`, `projects`, `project_screens`; RLS obligatorio con
+  `owner_id = auth.uid()` en toda fila de datos.
+- Contratos de aceptación en `docs/aceptacion/*.feature`.
+- Shell de la app en `lib/app/` (transversal a features).
