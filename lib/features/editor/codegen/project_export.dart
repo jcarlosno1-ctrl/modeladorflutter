@@ -24,6 +24,8 @@ List<ExportedFile> buildProjectFiles({
   required List<ProjectScreen> screens,
   required String entryScreenId,
   ProjectTheme theme = const ProjectTheme(),
+  String? initialScreenId,
+  String projectName = 'Flutter Studio App',
 }) {
   if (screens.isEmpty) {
     return const [];
@@ -33,12 +35,11 @@ List<ExportedFile> buildProjectFiles({
     orElse: () => screens.first,
   );
 
-  final files = <ExportedFile>[];
   final usedNames = <String>{};
+  final planned = <({ProjectScreen screen, bool isEntry, String fileName})>[];
 
   for (final screen in screens) {
-    final canvas = screen.canvas;
-    if (canvas == null) {
+    if (screen.canvas == null) {
       continue;
     }
     final isEntry = screen.id == entry.id;
@@ -54,19 +55,87 @@ List<ExportedFile> buildProjectFiles({
       }
       fileName = '$candidate.dart';
     }
+    planned.add((screen: screen, isEntry: isEntry, fileName: fileName));
+  }
+
+  final routes = <String, ({String className, String path})>{
+    for (final item in planned)
+      if (!item.isEntry)
+        item.screen.id: (
+          className: DartCodeGenerator.classNameFor(
+            fileName: item.fileName,
+            isEntry: false,
+          ),
+          path: DartCodeGenerator.pathFor(
+            fileName: item.fileName,
+            isEntry: false,
+          ),
+        ),
+  };
+
+  final files = <ExportedFile>[];
+  final initialRoute = initialScreenId == null || initialScreenId == entry.id
+      ? null
+      : '/screen/$initialScreenId';
+  for (final item in planned) {
     final content = DartCodeGenerator.generate(
-      screen: canvas,
-      fileName: fileName,
-      isEntry: isEntry,
+      screen: item.screen.canvas!,
+      fileName: item.fileName,
+      isEntry: item.isEntry,
       theme: theme,
+      routes: routes,
+      initialRoute: item.isEntry ? initialRoute : null,
     );
     files.add(
       ExportedFile(
-        DartCodeGenerator.pathFor(fileName: fileName, isEntry: isEntry),
+        DartCodeGenerator.pathFor(
+          fileName: item.fileName,
+          isEntry: item.isEntry,
+        ),
         content,
       ),
     );
   }
+  final slug = projectName
+      .toLowerCase()
+      .replaceAll(RegExp(r'[^a-z0-9]+'), '_')
+      .replaceAll(RegExp(r'^_+|_+$'), '');
+  final package = slug.isEmpty ? 'flutter_studio_app' : slug;
+  files.add(
+    ExportedFile(
+      'pubspec.yaml',
+      "name: $package\n"
+      "description: Proyecto generado con Flutter Studio Apps.\n"
+      "publish_to: 'none'\n"
+      'version: 1.0.0+1\n'
+      'environment:\n'
+      "  sdk: '>=3.5.0 <4.0.0'\n"
+      'dependencies:\n'
+      '  flutter:\n'
+      '    sdk: flutter\n'
+      '  cupertino_icons: ^1.0.8\n'
+      'dev_dependencies:\n'
+      '  flutter_test:\n'
+      '    sdk: flutter\n'
+      '  flutter_lints: ^5.0.0\n'
+      'flutter:\n'
+      '  uses-material-design: true\n',
+    ),
+  );
+  files.add(
+    ExportedFile(
+      'README.md',
+      '# $projectName\n\n'
+      'Proyecto generado con **Flutter Studio Apps**.\n\n'
+      '## Abrir en VS Code\n\n'
+      '1. Descomprimí el ZIP.\n'
+      '2. Abrí la carpeta en VS Code.\n'
+      '3. En la terminal: `flutter pub get`.\n'
+      '4. Ejecutá: `flutter run`.\n\n'
+      'La pantalla inicial se configura en el editor con la propiedad '
+      '**Pantalla inicial**.\n',
+    ),
+  );
   return files;
 }
 
@@ -149,11 +218,14 @@ Future<int> exportProjectZip({
   required String entryScreenId,
   required String projectName,
   ProjectTheme theme = const ProjectTheme(),
+  String? initialScreenId,
 }) async {
   final files = buildProjectFiles(
     screens: screens,
     entryScreenId: entryScreenId,
     theme: theme,
+    initialScreenId: initialScreenId,
+    projectName: projectName,
   );
   if (files.isEmpty) {
     return 0;
@@ -166,7 +238,7 @@ Future<int> exportProjectZip({
     buildZipBytes(files),
     '${safeName.isEmpty ? 'flutter_studio_app' : safeName}.zip',
   );
-  return files.length;
+  return files.where((file) => file.path.endsWith('.dart')).length;
 }
 
 void _u16(BytesBuilder builder, int value) {

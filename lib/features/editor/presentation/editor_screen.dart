@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -10,11 +12,15 @@ import '../catalog/color_value.dart';
 import '../catalog/property_spec.dart';
 import '../catalog/standard_catalog.dart';
 import '../catalog/widget_definition.dart';
+import '../../admin/application/admin_providers.dart';
 import '../codegen/dart_code_generator.dart';
 import '../codegen/project_export.dart';
 import '../domain/canvas_node.dart';
+import '../domain/project_screen.dart';
+import '../templates/screen_templates.dart';
 import '../../projects/domain/project_theme.dart';
 import '../../projects/presentation/project_theme_data.dart';
+import 'editor_actions.dart';
 import 'editor_drag_data.dart';
 import 'widget_renderer.dart';
 
@@ -85,6 +91,9 @@ abstract final class EditorKeys {
   /// Código generado.
   static const Key codeView = Key('editor.code.view');
 
+  /// Scroll vertical del código.
+  static const Key codeScroll = Key('editor.code.scroll');
+
   /// Botón copiar código.
   static const Key copyCode = Key('editor.code.copy');
 
@@ -93,6 +102,12 @@ abstract final class EditorKeys {
 
   /// Abre el tema del proyecto.
   static const Key theme = Key('editor.theme');
+
+  /// Abre la galería de plantillas.
+  static const Key templates = Key('editor.templates');
+
+  /// Tarjeta de una plantilla.
+  static Key template(String id) => Key('editor.template.$id');
 
   /// Guarda el tema.
   static const Key themeSave = Key('editor.theme.save');
@@ -147,6 +162,14 @@ abstract final class EditorKeys {
   /// Muestra u oculta las propiedades avanzadas.
   static const Key advancedToggle = Key('editor.properties.advanced');
 
+  /// Alta y baja de destinos de la barra inferior.
+  static const Key addDestination = Key('editor.bottomnav.add');
+  static const Key removeDestination = Key('editor.bottomnav.remove');
+  static const Key deleteDestination = Key('editor.bottomnav.delete');
+
+  /// Activa la interacción real de la vista previa.
+  static const Key liveToggle = Key('editor.live');
+
   /// Controles de zoom del lienzo.
   static const Key zoomIn = Key('editor.zoom.in');
   static const Key zoomOut = Key('editor.zoom.out');
@@ -170,15 +193,54 @@ class EditorScreen extends ConsumerStatefulWidget {
 }
 
 class _EditorScreenState extends ConsumerState<EditorScreen> {
+  /// `true` si el foco está en un campo de texto (ahí Delete/Backspace deben
+  /// editar el texto, no borrar el widget seleccionado).
+  bool get _isEditingText {
+    final context = FocusManager.instance.primaryFocus?.context;
+    if (context == null) {
+      return false;
+    }
+    return context.widget is EditableText ||
+        context.findAncestorWidgetOfExactType<EditableText>() != null;
+  }
+
+  Timer? _usageTimer;
+  String? _usageSessionId;
+
+  Future<void> _startUsageTracking() async {
+    final repository = ref.read(usageSessionRepositoryProvider);
+    final sessionId = await repository.start();
+    if (!mounted || sessionId == null) {
+      return;
+    }
+    _usageSessionId = sessionId;
+    _usageTimer = Timer.periodic(const Duration(minutes: 1), (_) {
+      repository.heartbeat(sessionId);
+    });
+  }
+
+  @override
+  void dispose() {
+    _usageTimer?.cancel();
+    final sessionId = _usageSessionId;
+    if (sessionId != null) {
+      ref.read(usageSessionRepositoryProvider).end(sessionId);
+    }
+    super.dispose();
+  }
+
   @override
   void initState() {
     super.initState();
     // Después del primer frame: abrir no debe mutar providers durante build.
-    WidgetsBinding.instance.addPostFrameCallback((_) {
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
       if (!mounted) {
         return;
       }
-      ref.read(editorSessionProvider.notifier).openProject(widget.project);
+      await ref
+          .read(editorSessionProvider.notifier)
+          .openProject(widget.project);
+      await _startUsageTracking();
     });
   }
 
@@ -198,6 +260,8 @@ class _EditorScreenState extends ConsumerState<EditorScreen> {
         fileName: fileName,
         isEntry: isEntry,
         theme: state.theme,
+        routes: _projectRoutes(state.screens),
+        initialRoute: _initialRoute(state.screens),
       );
     }
 
@@ -223,6 +287,9 @@ class _EditorScreenState extends ConsumerState<EditorScreen> {
         : 'Guardado';
 
     void deleteSelected() {
+      if (_isEditingText) {
+        return;
+      }
       final current = ref.read(editorSessionProvider);
       final id = current.selectedNodeId;
       if (id == null || id == current.root?.id) {
@@ -234,7 +301,6 @@ class _EditorScreenState extends ConsumerState<EditorScreen> {
     return CallbackShortcuts(
       bindings: {
         const SingleActivator(LogicalKeyboardKey.delete): deleteSelected,
-        const SingleActivator(LogicalKeyboardKey.backspace): deleteSelected,
       },
       child: Focus(
         autofocus: true,
@@ -243,34 +309,36 @@ class _EditorScreenState extends ConsumerState<EditorScreen> {
       projectStatus: root == null ? null : _SaveStatusPill(label: statusLabel),
       appBarActions: [
         if (root != null) ...[
-          IconButton(
-            key: EditorKeys.exportFiles,
-            tooltip: 'Exportar archivos .dart',
-            icon: const Icon(Icons.download_outlined),
-            onPressed: state.screens.isEmpty
-                ? null
-                : () async {
-                    final count = await exportProjectZip(
-                      screens: state.screens,
-                      entryScreenId: state.screens.first.id,
-                      projectName: widget.project.name,
-                      theme: state.theme,
-                    );
-                    if (!context.mounted) {
-                      return;
-                    }
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      SnackBar(
-                        content: Text(
-                          count == 0
-                              ? 'Nada para exportar'
-                              : 'ZIP con $count archivos .dart',
+          if (!compact)
+            IconButton(
+              key: EditorKeys.exportFiles,
+              tooltip: 'Exportar archivos .dart',
+              icon: const Icon(Icons.download_outlined),
+              onPressed: state.screens.isEmpty
+                  ? null
+                  : () async {
+                      final count = await exportProjectZip(
+                        screens: state.screens,
+                        entryScreenId: state.screens.first.id,
+                        projectName: widget.project.name,
+                        theme: state.theme,
+                        initialScreenId: _initialScreenId(state.screens),
+                      );
+                      if (!context.mounted) {
+                        return;
+                      }
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(
+                          content: Text(
+                            count == 0
+                                ? 'Nada para exportar'
+                                : 'ZIP con $count archivos .dart',
+                          ),
                         ),
-                      ),
-                    );
-                  },
-          ),
-          const SizedBox(width: 4),
+                      );
+                    },
+            ),
+          if (!compact) const SizedBox(width: 4),
           if (!compact)
             FilledButton.icon(
               key: EditorKeys.copyFromTop,
@@ -373,6 +441,21 @@ class _EditorToolsState extends ConsumerState<_EditorTools> {
                     ),
                   ),
                   IconButton(
+                    key: EditorKeys.templates,
+                    tooltip: 'Plantillas de pantalla',
+                    visualDensity: VisualDensity.compact,
+                    padding: EdgeInsets.zero,
+                    constraints: const BoxConstraints(
+                      minWidth: 32,
+                      minHeight: 32,
+                    ),
+                    icon: const Icon(
+                      Icons.auto_awesome_mosaic_outlined,
+                      size: 18,
+                    ),
+                    onPressed: () => _openTemplates(context, ref),
+                  ),
+                  IconButton(
                     key: EditorKeys.theme,
                     tooltip: 'Tema del proyecto',
                     visualDensity: VisualDensity.compact,
@@ -429,9 +512,25 @@ class _EditorToolsState extends ConsumerState<_EditorTools> {
     );
   }
 
+  /// Abre la galería de plantillas y crea la pantalla elegida.
+  Future<void> _openTemplates(BuildContext context, WidgetRef ref) async {
+    final template = await showDialog<ScreenTemplate>(
+      context: context,
+      builder: (_) => const _TemplatesDialog(),
+    );
+    if (template == null) {
+      return;
+    }
+    await ref
+        .read(editorSessionProvider.notifier)
+        .createScreenFromTemplate(
+          name: template.fileName,
+          root: template.canvas,
+        );
+  }
+
   /// Abre el tema del proyecto y lo guarda si el usuario confirma.
-  Future<void> _openTheme(BuildContext context, WidgetRef ref) async {
-    final notifier = ref.read(editorSessionProvider.notifier);
+  Future<void> _openTheme(BuildContext context, WidgetRef ref) async {    final notifier = ref.read(editorSessionProvider.notifier);
     final current = ref.read(editorSessionProvider).theme;
     final result = await showDialog<ProjectTheme>(
       context: context,
@@ -440,6 +539,127 @@ class _EditorToolsState extends ConsumerState<_EditorTools> {
     if (result != null) {
       await notifier.saveTheme(result);
     }
+  }
+}
+
+/// Galería de plantillas de pantalla.
+class _TemplatesDialog extends StatelessWidget {
+  const _TemplatesDialog();
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Dialog(
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 720, maxHeight: 540),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 12, 8, 8),
+              child: Row(
+                children: [
+                  Icon(
+                    Icons.dashboard_customize_outlined,
+                    size: 18,
+                    color: theme.colorScheme.primary,
+                  ),
+                  const SizedBox(width: 8),
+                  Text('Plantillas', style: theme.textTheme.titleSmall),
+                  const Spacer(),
+                  IconButton(
+                    tooltip: 'Cerrar',
+                    icon: const Icon(Icons.close, size: 18),
+                    onPressed: () => Navigator.of(context).pop(),
+                  ),
+                ],
+              ),
+            ),
+            const Divider(height: 1),
+            Flexible(
+              child: Material(
+                color: Colors.transparent,
+                child: GridView.builder(
+                  padding: const EdgeInsets.all(12),
+                  gridDelegate:
+                      const SliverGridDelegateWithMaxCrossAxisExtent(
+                        maxCrossAxisExtent: 300,
+                        mainAxisExtent: 96,
+                        crossAxisSpacing: 10,
+                        mainAxisSpacing: 10,
+                      ),
+                  itemCount: screenTemplates.length,
+                  itemBuilder: (context, index) {
+                    final template = screenTemplates[index];
+                    return InkWell(
+                      key: EditorKeys.template(template.id),
+                      borderRadius: BorderRadius.circular(10),
+                      onTap: () => Navigator.of(context).pop(template),
+                      child: Container(
+                        padding: const EdgeInsets.all(10),
+                        decoration: BoxDecoration(
+                          color: theme.colorScheme.surfaceContainerLowest,
+                          borderRadius: BorderRadius.circular(10),
+                          border: Border.all(
+                            color: theme.colorScheme.outlineVariant,
+                          ),
+                        ),
+                        child: Row(
+                          children: [
+                            Container(
+                              width: 36,
+                              height: 36,
+                              decoration: BoxDecoration(
+                                color: theme.colorScheme.primaryContainer,
+                                borderRadius: BorderRadius.circular(9),
+                              ),
+                              child: Icon(
+                                template.icon,
+                                size: 19,
+                                color: theme.colorScheme.onPrimaryContainer,
+                              ),
+                            ),
+                            const SizedBox(width: 10),
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                mainAxisAlignment: MainAxisAlignment.center,
+                                children: [
+                                  Text(
+                                    template.label,
+                                    style: theme.textTheme.labelLarge
+                                        ?.copyWith(fontSize: 12),
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
+                                  const SizedBox(height: 2),
+                                  Text(
+                                    template.description,
+                                    style: theme.textTheme.labelSmall
+                                        ?.copyWith(
+                                          fontSize: 10,
+                                          color:
+                                              theme.colorScheme.onSurfaceVariant,
+                                        ),
+                                    maxLines: 2,
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    );
+                  },
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 }
 
@@ -1002,11 +1222,11 @@ class _EditorTreeState extends ConsumerState<_EditorTree> {
                 child: Container(
                   height: 28,
                   decoration: BoxDecoration(
-                    color: selected ? AppTheme.primarySoft : null,
+                    color: selected ? AppTheme.selectionSoft : null,
                     border: Border(
                       left: BorderSide(
                         color: selected
-                            ? AppTheme.primary
+                            ? AppTheme.selection
                             : Colors.transparent,
                         width: 2,
                       ),
@@ -1203,6 +1423,8 @@ class _EditorCanvasState extends ConsumerState<_EditorCanvas> {
   final _scrollController = ScrollController();
   bool _showCode = false;
   double? _zoom;
+  bool _live = false;
+  final List<String> _screenHistory = [];
 
   @override
   void dispose() {
@@ -1274,17 +1496,45 @@ class _EditorCanvasState extends ConsumerState<_EditorCanvas> {
                           : fitHeight)
                       .clamp(0.2, 1.0);
                   final scale = (_zoom ?? fitScale).clamp(0.2, 1.6);
-                  final content = WidgetRenderer(
-                    node: root,
-                    selectedNodeId: state.selectedNodeId,
-                    onNodeTap: (node) => notifier.selectNode(node.id),
-                    onNodeDrop: (draggedId, targetId) =>
-                        notifier.moveNode(draggedId, targetId),
-                    onComponentDrop: (type, targetId) =>
-                        notifier.addComponentAt(type, targetId),
-                    screenScrollController: _scrollController,
-                    showDrawer: state.drawerOpen,
-                    showEndDrawer: state.endDrawerOpen,
+                  final content = EditorActions(
+                    onNavigateScreen: (screenId) {
+                      final current = state.screenId;
+                      if (current != null && current != screenId) {
+                        _screenHistory.add(current);
+                      }
+                      notifier.selectScreen(screenId);
+                    },
+                    onBack: () {
+                      if (_screenHistory.isNotEmpty) {
+                        notifier.selectScreen(_screenHistory.removeLast());
+                      } else {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(
+                            content: Text(
+                              'No hay una pantalla anterior en la vista previa.',
+                            ),
+                          ),
+                        );
+                      }
+                    },
+                    child: WidgetRenderer(
+                      node: root,
+                      selectedNodeId: _live ? null : state.selectedNodeId,
+                      onNodeTap: _live
+                          ? null
+                          : (node) => notifier.selectNode(node.id),
+                      onNodeDrop: _live
+                          ? null
+                          : (draggedId, targetId) =>
+                                notifier.moveNode(draggedId, targetId),
+                      onComponentDrop: _live
+                          ? null
+                          : (type, targetId) =>
+                                notifier.addComponentAt(type, targetId),
+                      screenScrollController: _scrollController,
+                      showDrawer: state.drawerOpen,
+                      showEndDrawer: state.endDrawerOpen,
+                    ),
                   );
 
                   final themedContent = Theme(
@@ -1409,11 +1659,22 @@ class _EditorCanvasState extends ConsumerState<_EditorCanvas> {
       fileName: fileName,
       isEntry: isEntry,
       theme: state.theme,
+      routes: _projectRoutes(state.screens),
+      initialRoute: _initialRoute(state.screens),
     );
     final path = DartCodeGenerator.pathFor(
       fileName: fileName,
       isEntry: isEntry,
     );
+    final selectedNode = state.selectedNodeId == null
+        ? null
+        : root.findNode(state.selectedNodeId!);
+    final marker = selectedNode == null
+        ? null
+        : standardCatalog[selectedNode.type]?.label;
+    final occurrence = selectedNode == null || marker == null
+        ? 0
+        : _labelOccurrence(root, selectedNode.id, marker);
 
     return Column(
       children: [
@@ -1421,10 +1682,17 @@ class _EditorCanvasState extends ConsumerState<_EditorCanvas> {
         _CanvasToolbar(
           showCode: _showCode,
           onChanged: (value) => setState(() => _showCode = value),
+          live: _live,
+          onToggleLive: () => setState(() => _live = !_live),
         ),
         Expanded(
           child: _showCode
-              ? _CodeView(code: code, path: path)
+              ? _CodeView(
+                  code: code,
+                  path: path,
+                  marker: marker,
+                  occurrence: occurrence,
+                )
               : canvasArea,
         ),
       ],
@@ -1434,10 +1702,17 @@ class _EditorCanvasState extends ConsumerState<_EditorCanvas> {
 
 /// Barra del lienzo: dispositivo, tamaño, estado "en vivo" y Diseño/Código.
 class _CanvasToolbar extends ConsumerWidget {
-  const _CanvasToolbar({required this.showCode, required this.onChanged});
+  const _CanvasToolbar({
+    required this.showCode,
+    required this.onChanged,
+    required this.live,
+    required this.onToggleLive,
+  });
 
   final bool showCode;
   final ValueChanged<bool> onChanged;
+  final bool live;
+  final VoidCallback onToggleLive;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -1483,35 +1758,51 @@ class _CanvasToolbar extends ConsumerWidget {
                   style: theme.textTheme.labelSmall,
                 ),
                 const SizedBox(width: 12),
-                Container(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 8,
-                    vertical: 4,
-                  ),
-                  decoration: BoxDecoration(
-                    color: AppTheme.primarySoft,
+                Tooltip(
+                  message: live
+                      ? 'Desactivar interacción'
+                      : 'Activar interacción',
+                  child: InkWell(
+                    key: EditorKeys.liveToggle,
                     borderRadius: BorderRadius.circular(999),
-                  ),
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Container(
-                        width: 6,
-                        height: 6,
-                        decoration: const BoxDecoration(
-                          color: AppTheme.primary,
-                          shape: BoxShape.circle,
-                        ),
+                    onTap: onToggleLive,
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 8,
+                        vertical: 4,
                       ),
-                      const SizedBox(width: 5),
-                      const Text(
-                        'En vivo',
-                        style: TextStyle(
-                          fontSize: 10,
-                          color: AppTheme.primary,
-                        ),
+                      decoration: BoxDecoration(
+                        color: live
+                            ? AppTheme.primary
+                            : AppTheme.primarySoft,
+                        borderRadius: BorderRadius.circular(999),
                       ),
-                    ],
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Container(
+                            width: 6,
+                            height: 6,
+                            decoration: BoxDecoration(
+                              color: live
+                                  ? Colors.white
+                                  : AppTheme.primary,
+                              shape: BoxShape.circle,
+                            ),
+                          ),
+                          const SizedBox(width: 5),
+                          Text(
+                            'En vivo',
+                            style: TextStyle(
+                              fontSize: 10,
+                              color: live
+                                  ? Colors.white
+                                  : AppTheme.primary,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
                   ),
                 ),
                 const SizedBox(width: 12),
@@ -1821,11 +2112,86 @@ class _CanvasStatusBar extends StatelessWidget {
 
 /// Barra Diseño / Código del lienzo.
 /// Vista de código exportable con nota de ruta y copiado.
-class _CodeView extends StatelessWidget {
-  const _CodeView({required this.code, required this.path});
+class _CodeView extends StatefulWidget {
+  const _CodeView({
+    required this.code,
+    required this.path,
+    this.marker,
+    this.occurrence = 0,
+  });
 
   final String code;
   final String path;
+  final String? marker;
+  final int occurrence;
+
+  @override
+  State<_CodeView> createState() => _CodeViewState();
+}
+
+class _CodeViewState extends State<_CodeView> {
+  String get code => widget.code;
+  String get path => widget.path;
+
+  final _scrollController = ScrollController();
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) => _scrollToMarker());
+  }
+
+  @override
+  void didUpdateWidget(_CodeView oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.marker != widget.marker ||
+        oldWidget.code != widget.code) {
+      WidgetsBinding.instance.addPostFrameCallback((_) => _scrollToMarker());
+    }
+  }
+
+  @override
+  void dispose() {
+    _scrollController.dispose();
+    super.dispose();
+  }
+
+  /// Lleva el scroll al comentario de inicio del widget seleccionado.
+  void _scrollToMarker() {
+    final marker = widget.marker;
+    if (marker == null || marker.isEmpty || !_scrollController.hasClients) {
+      return;
+    }
+    final token = 'inicio de $marker';
+    final positions = <int>[];
+    for (final pattern in ['// $token', '/* $token */']) {
+      var start = 0;
+      while (true) {
+        final found = code.indexOf(pattern, start);
+        if (found < 0) {
+          break;
+        }
+        positions.add(found);
+        start = found + 1;
+      }
+    }
+    if (positions.isEmpty) {
+      return;
+    }
+    positions.sort();
+    final index = positions[widget.occurrence.clamp(0, positions.length - 1)];
+    final line = '\n'.allMatches(code.substring(0, index)).length;
+    const lineHeight = 12.5 * 1.5;
+    final target = (line * lineHeight - 100).clamp(
+      0.0,
+      _scrollController.position.maxScrollExtent,
+    );
+    _scrollController.animateTo(
+      target,
+      duration: const Duration(milliseconds: 250),
+      curve: Curves.easeOut,
+    );
+  }
 
   // Paleta fija de editor de código (independiente del tema de la app).
   static const _background = Color(0xFF1E1E1E);
@@ -1923,6 +2289,8 @@ class _CodeView extends StatelessWidget {
           ),
           Expanded(
             child: SingleChildScrollView(
+              key: EditorKeys.codeScroll,
+              controller: _scrollController,
               child: SingleChildScrollView(
                 scrollDirection: Axis.horizontal,
                 padding: const EdgeInsets.symmetric(vertical: 8),
@@ -2195,9 +2563,29 @@ class _EditorPropertiesState extends ConsumerState<_EditorProperties> {
     }
 
     final sections = <String, List<PropertySpec>>{};
+    final widthSpec = definition.propertyFor('widthMode');
+    final widthMode =
+        widthSpec?.coerce(node.properties['widthMode']) ?? 'expand';
     for (final spec in definition.properties) {
       if (spec.hidden) {
         continue;
+      }
+      if (spec.key == 'bodyAlignment' && widthMode != 'fit') {
+        continue;
+      }
+      if (node.type == 'icon' &&
+          spec.key == 'alignment' &&
+          widthMode != 'fit') {
+        continue;
+      }
+      if (spec.key == 'targetScreen') {
+        final action =
+            node.properties['onTap'] ??
+            node.properties['onFocus'] ??
+            node.properties['onBlur'];
+        if (action != 'navigate') {
+          continue;
+        }
       }
       // Las propiedades neutras se ocultan hasta activar el modo Avanzado,
       // salvo que el usuario ya las haya cambiado.
@@ -2235,7 +2623,7 @@ class _EditorPropertiesState extends ConsumerState<_EditorProperties> {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
-                    definition.label,
+                    _nodeLabel(node),
                     key: EditorKeys.propertiesTitle,
                     style: theme.textTheme.titleSmall,
                   ),
@@ -2243,7 +2631,8 @@ class _EditorPropertiesState extends ConsumerState<_EditorProperties> {
                   Text(
                     definition.flutterClass == null
                         ? definition.type
-                        : 'Flutter · ${definition.flutterClass}',
+                        : 'Flutter · ${definition.flutterClass}'
+                              '${node.type == 'bottomNav' ? ' · ${node.children.length} destinos' : ''}',
                     style: theme.textTheme.labelSmall,
                   ),
                 ],
@@ -2270,28 +2659,6 @@ class _EditorPropertiesState extends ConsumerState<_EditorProperties> {
           ],
         ),
         const SizedBox(height: 10),
-        Align(
-          alignment: Alignment.centerLeft,
-          child: TextButton.icon(
-            key: EditorKeys.advancedToggle,
-            onPressed: () =>
-                setState(() => _showAdvanced = !_showAdvanced),
-            style: TextButton.styleFrom(
-              visualDensity: VisualDensity.compact,
-              padding: const EdgeInsets.symmetric(horizontal: 6),
-              minimumSize: const Size(0, 26),
-              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-            ),
-            icon: Icon(
-              _showAdvanced ? Icons.tune : Icons.tune_outlined,
-              size: 14,
-            ),
-            label: Text(
-              _showAdvanced ? 'Ocultar avanzado' : 'Mostrar avanzado',
-              style: const TextStyle(fontSize: 10.5),
-            ),
-          ),
-        ),
         for (final section in orderedSections) ...[
           Padding(
             padding: const EdgeInsets.only(top: 6, bottom: 8),
@@ -2344,6 +2711,85 @@ class _EditorPropertiesState extends ConsumerState<_EditorProperties> {
             const SizedBox(height: 12),
           ],
         ],
+        if (node.type == 'bottomNav') ...[
+          Padding(
+            padding: const EdgeInsets.only(top: 6, bottom: 8),
+            child: Row(
+              children: [
+                Text(
+                  'DESTINOS (${node.children.length})',
+                  style: theme.textTheme.labelSmall?.copyWith(
+                    letterSpacing: 0.8,
+                    fontWeight: FontWeight.w700,
+                    color: AppTheme.textMuted,
+                  ),
+                ),
+                const SizedBox(width: 8),
+                const Expanded(child: Divider(height: 1, thickness: 1)),
+                IconButton(
+                  key: EditorKeys.addDestination,
+                  tooltip: 'Agregar destino',
+                  visualDensity: VisualDensity.compact,
+                  padding: EdgeInsets.zero,
+                  constraints: const BoxConstraints(
+                    minWidth: 26,
+                    minHeight: 26,
+                  ),
+                  iconSize: 16,
+                  onPressed: node.children.length >= 6
+                      ? null
+                      : () => ref
+                            .read(editorSessionProvider.notifier)
+                            .addDestination(),
+                  icon: const Icon(Icons.add_circle_outline),
+                ),
+                IconButton(
+                  key: EditorKeys.removeDestination,
+                  tooltip: 'Quitar último destino',
+                  visualDensity: VisualDensity.compact,
+                  padding: EdgeInsets.zero,
+                  constraints: const BoxConstraints(
+                    minWidth: 26,
+                    minHeight: 26,
+                  ),
+                  iconSize: 16,
+                  onPressed: node.children.length <= 2
+                      ? null
+                      : () => ref
+                            .read(editorSessionProvider.notifier)
+                            .removeLastDestination(),
+                  icon: const Icon(Icons.remove_circle_outline),
+                ),
+              ],
+            ),
+          ),
+        ],
+        const SizedBox(height: 8),
+        const Divider(height: 1),
+        Align(
+          alignment: Alignment.centerLeft,
+          child: TextButton.icon(
+            key: EditorKeys.advancedToggle,
+            onPressed: () =>
+                setState(() => _showAdvanced = !_showAdvanced),
+            style: TextButton.styleFrom(
+              visualDensity: VisualDensity.compact,
+              padding: const EdgeInsets.symmetric(horizontal: 6),
+              minimumSize: const Size(0, 28),
+              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+            ),
+            icon: Icon(
+              _showAdvanced ? Icons.tune : Icons.tune_outlined,
+              size: 14,
+            ),
+            label: Text(
+              _showAdvanced
+                  ? 'Ocultar opciones avanzadas'
+                  : 'Mostrar opciones avanzadas',
+              style: const TextStyle(fontSize: 10.5),
+            ),
+          ),
+        ),
         if (definition.properties.isEmpty)
           Text(
             'Este componente no tiene propiedades.',
@@ -2382,6 +2828,19 @@ class _EditorPropertiesState extends ConsumerState<_EditorProperties> {
           ),
         ),
         const SizedBox(height: 8),
+        if (node.type == 'icon' &&
+            root.findParent(node.id)?.type == 'bottomNav')
+          TextButton.icon(
+            key: EditorKeys.deleteDestination,
+            onPressed: () => ref
+                .read(editorSessionProvider.notifier)
+                .removeNode(node.id),
+            icon: Icon(Icons.delete_outline, color: theme.colorScheme.error),
+            label: Text(
+              'Eliminar este destino',
+              style: TextStyle(color: theme.colorScheme.error),
+            ),
+          ),
         const Divider(height: 1),
         TextButton.icon(
           key: EditorKeys.deleteNode,
@@ -2416,7 +2875,7 @@ class _PropertyFieldState extends ConsumerState<_PropertyField> {
   late final TextEditingController _controller;
 
   Object? get _value =>
-      widget.node.properties[widget.spec.key] ?? widget.spec.defaultValue;
+      widget.spec.coerce(widget.node.properties[widget.spec.key]);
 
   @override
   void initState() {
@@ -2438,6 +2897,14 @@ class _PropertyFieldState extends ConsumerState<_PropertyField> {
   }
 
   void _update(Object? value) {
+    if (widget.spec.key == 'initial' &&
+        widget.node.type == 'screen' &&
+        value is bool) {
+      ref
+          .read(editorSessionProvider.notifier)
+          .setInitialScreen(widget.node.id, value);
+      return;
+    }
     ref
         .read(editorSessionProvider.notifier)
         .updateProperty(widget.node.id, widget.spec.key, value);
@@ -2519,10 +2986,24 @@ class _PropertyFieldState extends ConsumerState<_PropertyField> {
             for (final choice in spec.choices)
               DropdownMenuItem(
                 value: choice.value,
-                child: Text(
-                  choice.label,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(fontSize: 12),
+                child: Row(
+                  children: [
+                    if (choice.icon != null) ...[
+                      Icon(
+                        choice.icon,
+                        size: 15,
+                        color: AppTheme.textMuted,
+                      ),
+                      const SizedBox(width: 7),
+                    ],
+                    Expanded(
+                      child: Text(
+                        choice.label,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(fontSize: 12),
+                      ),
+                    ),
+                  ],
                 ),
               ),
           ],
@@ -2533,6 +3014,54 @@ class _PropertyFieldState extends ConsumerState<_PropertyField> {
           },
         ),
       ),
+      PropertyType.destinationIndex => _FieldLabel(
+        label: spec.label,
+        child: widget.node.children.isEmpty
+            ? const Text(
+                'Sin destinos: agregá uno primero.',
+                style: TextStyle(fontSize: 11),
+              )
+            : DropdownButtonFormField<int>(
+                key: EditorKeys.propertyField(spec.key),
+                initialValue: ((_value as num?)?.round() ?? 0).clamp(
+                  0,
+                  widget.node.children.length - 1,
+                ),
+                isExpanded: true,
+                isDense: true,
+                style: const TextStyle(fontSize: 12),
+                decoration: const InputDecoration(
+                  contentPadding: EdgeInsets.symmetric(
+                    horizontal: 10,
+                    vertical: 8,
+                  ),
+                ),
+                items: [
+                  for (
+                    var index = 0;
+                    index < widget.node.children.length;
+                    index++
+                  )
+                    DropdownMenuItem(
+                      value: index,
+                      child: Text(
+                        _nodeLabel(widget.node.children[index]),
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(fontSize: 12),
+                      ),
+                    ),
+                ],
+                onChanged: (value) {
+                  if (value != null) {
+                    _update(value);
+                  }
+                },
+              ),
+      ),
+      PropertyType.screenTarget => _FieldLabel(
+        label: spec.label,
+        child: _screenSelector(),
+      ),
       PropertyType.color => _ColorPropertyField(
         key: ValueKey<String>('${widget.node.id}.${widget.spec.key}.color'),
         spec: spec,
@@ -2540,6 +3069,42 @@ class _PropertyFieldState extends ConsumerState<_PropertyField> {
         onChanged: _update,
       ),
     };
+  }
+
+  Widget _screenSelector() {
+    final screens = ref.watch(editorSessionProvider).screens;
+    final current = _value as String? ?? '';
+    final valid = screens.any((screen) => screen.id == current);
+    return DropdownButtonFormField<String>(
+      key: EditorKeys.propertyField(widget.spec.key),
+      initialValue: valid ? current : '',
+      isExpanded: true,
+      isDense: true,
+      style: const TextStyle(fontSize: 12),
+      decoration: const InputDecoration(
+        contentPadding: EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+      ),
+      items: [
+        const DropdownMenuItem(
+          value: '',
+          child: Text('Sin pantalla', style: TextStyle(fontSize: 12)),
+        ),
+        for (final screen in screens)
+          DropdownMenuItem(
+            value: screen.id,
+            child: Text(
+              screen.name.replaceAll('.dart', ''),
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(fontSize: 12),
+            ),
+          ),
+      ],
+      onChanged: (value) {
+        if (value != null) {
+          _update(value);
+        }
+      },
+    );
   }
 
   static String? _rangeLabel(PropertySpec spec) {
@@ -2932,18 +3497,130 @@ List<CanvasNode> _orderedChildren(CanvasNode node) {
   return entries.map((entry) => entry.$2).toList(growable: false);
 }
 
-/// Etiqueta legible de un nodo para el árbol.
-String _nodeLabel(CanvasNode node) {
-  final label = standardCatalog[node.type]?.label ?? node.type;
-  final preview = switch (node.type) {
-    'text' => node.properties['text'] as String?,
-    'button' => node.properties['label'] as String?,
-    _ => null,
-  };
-  if (preview == null || preview.isEmpty) {
-    return label;
+/// Id de la pantalla marcada como inicial, si existe.
+String? _initialScreenId(List<ProjectScreen> screens) {
+  String? found;
+  for (final screen in screens) {
+    if (screen.canvas?.properties['initial'] == true) {
+      found = screen.id;
+    }
   }
-  return '$label: $preview';
+  return found;
+}
+
+/// Ruta inicial solo cuando no es la pantalla de entrada.
+String? _initialRoute(List<ProjectScreen> screens) {
+  final id = _initialScreenId(screens);
+  if (id == null || screens.isEmpty || id == screens.first.id) {
+    return null;
+  }
+  return '/screen/$id';
+}
+
+/// Rutas nombradas de todas las pantallas secundarias del proyecto.
+Map<String, ({String className, String path})> _projectRoutes(
+  List<ProjectScreen> screens,
+) {
+  if (screens.isEmpty) {
+    return const {};
+  }
+  final entryId = screens.first.id;
+  return {
+    for (final screen in screens)
+      if (screen.id != entryId)
+        screen.id: (
+          className: DartCodeGenerator.classNameFor(
+            fileName: screen.name,
+            isEntry: false,
+          ),
+          path: DartCodeGenerator.pathFor(
+            fileName: screen.name,
+            isEntry: false,
+          ),
+        ),
+  };
+}
+
+/// Cantidad de nodos con la misma etiqueta antes de [nodeId].
+int _labelOccurrence(CanvasNode root, String nodeId, String label) {
+  var count = 0;
+  var found = false;
+
+  void walk(CanvasNode node) {
+    if (found) {
+      return;
+    }
+    if (node.id == nodeId) {
+      found = true;
+      return;
+    }
+    if (node.id != root.id &&
+        standardCatalog[node.type]?.label == label) {
+      count++;
+    }
+    for (final child in node.children) {
+      walk(child);
+    }
+  }
+
+  walk(root);
+  return count;
+}
+
+/// Etiqueta legible de un nodo para el árbol, la cabecera y el lienzo.
+///
+/// Si el control tiene `label`, `title` o `text`, se usa ese valor para que
+/// el usuario reconozca el widget por su contenido y no por su tipo.
+String _nodeLabel(CanvasNode node) {
+  final typeLabel = standardCatalog[node.type]?.label ?? node.type;
+  if (node.type == 'screen') {
+    return typeLabel;
+  }
+  const structural = {
+    'appBar',
+    'bottomNav',
+    'bottomAppBar',
+    'tabs',
+    'drawer',
+    'endDrawer',
+    'fab',
+  };
+  if (structural.contains(node.type)) {
+    return typeLabel;
+  }
+  if (node.type == 'icon' || node.type == 'navItem') {
+    final label = node.properties['label'];
+    if (label is String && label.trim().isNotEmpty) {
+      return label.trim();
+    }
+    return typeLabel;
+  }
+  if (node.type == 'text') {
+    final text = node.properties['text'];
+    if (text is String && text.trim().isNotEmpty) {
+      final trimmed = text.trim();
+      final value = trimmed.length > 28
+          ? '${trimmed.substring(0, 28)}…'
+          : trimmed;
+      return '$typeLabel: $value';
+    }
+    return typeLabel;
+  }
+  if (node.type == 'button') {
+    final label = node.properties['label'];
+    if (label is String && label.trim().isNotEmpty) {
+      return '$typeLabel: ${label.trim()}';
+    }
+    return typeLabel;
+  }
+  for (final key in const ['label', 'title']) {
+    final value = node.properties[key];
+    if (value is String && value.trim().isNotEmpty) {
+      final trimmed = value.trim();
+      return trimmed.length > 28 ? '${trimmed.substring(0, 28)}…' : trimmed;
+    }
+  }
+  return typeLabel;
 }
 
 /// Nombre visible de la categoría.
@@ -3051,7 +3728,7 @@ const _dartConstants = {'true', 'false', 'null'};
 /// Resalta el código Dart con los colores del panel oscuro.
 TextSpan _highlightDart(String code, TextStyle base) {
   final pattern = RegExp(
-    r'''//[^\n]*|'(?:\\.|[^'\\])*'|"(?:\\.|[^"\\])*"|\b\d+(?:\.\d+)?\b|\b[A-Za-z_][A-Za-z0-9_]*\b|[\s\S]''',
+    r'''//[^\n]*|/\*[\s\S]*?\*/|'(?:\\.|[^'\\])*'|"(?:\\.|[^"\\])*"|@[A-Za-z_]\w*|\b\d+(?:\.\d+)?\b|\b[A-Za-z_]\w*\b|[\s\S]''',
   );
 
   const comment = Color(0xFF6A9955);
@@ -3060,6 +3737,10 @@ TextSpan _highlightDart(String code, TextStyle base) {
   const constant = Color(0xFF569CD6);
   const type = Color(0xFF4EC9B0);
   const number = Color(0xFFB5CEA8);
+  const variable = Color(0xFF9CDCFE);
+  const function = Color(0xFFDCDCAA);
+  const annotation = Color(0xFFDCDCAA);
+  const namedArgument = Color(0xFF9CDCFE);
 
   final spans = <TextSpan>[];
   final buffer = StringBuffer();
@@ -3081,18 +3762,34 @@ TextSpan _highlightDart(String code, TextStyle base) {
     buffer.write(text);
   }
 
+  bool isFunctionCall(String after) => RegExp(r'^\s*\(').hasMatch(after);
+  bool isNamedArgument(String after) =>
+      RegExp(r'^\s*:(?!:)').hasMatch(after);
+
   for (final match in pattern.allMatches(code)) {
     final text = match[0]!;
+    final after = code.substring(match.end);
+    final before = match.start > 0 ? code[match.start - 1] : '';
 
-    if (text.startsWith('//')) {
-      add(text, base.copyWith(color: comment, fontStyle: FontStyle.italic));    } else if (text.startsWith("'") || text.startsWith('"')) {
+    if (text.startsWith('//') || text.startsWith('/*')) {
+      add(text, base.copyWith(color: comment));
+    } else if (text.startsWith("'") || text.startsWith('"')) {
       add(text, base.copyWith(color: string));
+    } else if (text.startsWith('@')) {
+      add(text, base.copyWith(color: annotation));
     } else if (RegExp(r'^\d').hasMatch(text)) {
       add(text, base.copyWith(color: number));
     } else if (_dartKeywords.contains(text)) {
       add(text, base.copyWith(color: keyword));
     } else if (_dartConstants.contains(text)) {
       add(text, base.copyWith(color: constant));
+    } else if (before == '.') {
+      add(text, base.copyWith(color: variable));
+    } else if (isNamedArgument(after)) {
+      add(text, base.copyWith(color: namedArgument));
+    } else if (isFunctionCall(after)) {
+      final isType = RegExp(r'^[A-Z]').hasMatch(text);
+      add(text, base.copyWith(color: isType ? type : function));
     } else if (RegExp(r'^[A-Z]').hasMatch(text)) {
       add(text, base.copyWith(color: type));
     } else {

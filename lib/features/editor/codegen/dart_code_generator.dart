@@ -34,17 +34,39 @@ abstract final class DartCodeGenerator {
     required String fileName,
     required bool isEntry,
     ProjectTheme theme = const ProjectTheme(),
+    Map<String, ({String className, String path})> routes = const {},
+    String? initialRoute,
   }) {
     final scaffold = _scaffold(screen);
     final className = classNameFor(fileName: fileName, isEntry: isEntry);
     final themeCode = isEntry ? _themeData(theme) : null;
+    final homeCode = isEntry
+        ? 'Builder(\n'
+              '  builder: (context) => ${_inline('', scaffold, '  ')},\n'
+              ')'
+        : scaffold;
+    final routeEntries = <String>[
+      if (isEntry)
+        for (final route in routes.entries)
+          if (route.value.className != className)
+            "        '/screen/${route.key}': (context) => "
+                'const ${route.value.className}(),',
+    ];
+    final routeImports = <String>[
+      if (isEntry)
+        for (final route in routes.values)
+          if (route.className != className)
+            "import '${_relativeImport('lib/main.dart', route.path)}';",
+    ];
 
     final build = isEntry
         ? '  @override\n'
               '  Widget build(BuildContext context) {\n'
               '    return MaterialApp(\n'
               '${themeCode == null ? '' : '      theme: ${_inline('', themeCode, '      ')},\n'}'
-              '      ${_inline('home: ', scaffold, '      ')},\n'
+              '${routeEntries.isEmpty ? '' : '      routes: {\n${routeEntries.join('\n')}\n      },\n'}'
+              '${initialRoute == null ? '' : "      initialRoute: '$initialRoute',\n"}'
+              '      ${_inline('home: ', homeCode, '      ')},\n'
               '    );\n'
               '  }\n'
         : '  @override\n'
@@ -52,12 +74,30 @@ abstract final class DartCodeGenerator {
               '    ${_inline('return ', scaffold, '    ')};\n'
               '  }\n';
 
-    return "import 'package:flutter/material.dart';\n\n"
+    return "import 'package:flutter/material.dart';\n"
+        '${routeImports.isEmpty ? '' : '\n${routeImports.join('\n')}\n'}\n'
         "${isEntry ? 'void main() {\n  runApp(const $className());\n}\n\n' : ''}"
         'class $className extends StatelessWidget {\n'
         '  const $className({super.key});\n\n'
         '$build'
         '}\n';
+  }
+
+  /// Ruta relativa entre dos archivos `lib/...`.
+  static String _relativeImport(String from, String to) {
+    final fromParts = from.split('/');
+    final toParts = to.split('/');
+    var same = 0;
+    while (same < fromParts.length - 1 &&
+        same < toParts.length - 1 &&
+        fromParts[same] == toParts[same]) {
+      same++;
+    }
+    final ups = (fromParts.length - 1) - same;
+    return [
+      for (var index = 0; index < ups; index++) '..',
+      ...toParts.sublist(same),
+    ].join('/');
   }
 
   /// `ThemeData` del proyecto, o `null` si se usa el tema por defecto.
@@ -138,6 +178,15 @@ abstract final class DartCodeGenerator {
   }
 
   /// Bloque `Scaffold(...)` con los slots de la pantalla.
+  static String _withNote(CanvasNode? node, String code) {
+    final label = node == null ? null : standardCatalog[node.type]?.label;
+    if (label == null || label.isEmpty) {
+      return code;
+    }
+    // Comentarios de bloque: la coma del argumento queda fuera del comentario.
+    return '/* inicio de $label */\n$code\n/* fin de $label */';
+  }
+
   static String _scaffold(CanvasNode screen) {
     final catalog = standardCatalog;
     final definition = catalog['screen']!;
@@ -178,7 +227,7 @@ abstract final class DartCodeGenerator {
 
     final args = <String>[];
     if (top != null && !hideOnScroll) {
-      args.add('appBar: ${_widgetInline(top)}');
+      args.add(_withNote(top, 'appBar: ${_widgetInline(top)}'));
     }
 
     final bodyCode = body.isEmpty
@@ -222,16 +271,20 @@ abstract final class DartCodeGenerator {
     }
 
     if (bottom != null) {
-      args.add('bottomNavigationBar: ${_widgetInline(bottom)}');
+      args.add(
+        _withNote(bottom, 'bottomNavigationBar: ${_widgetInline(bottom)}'),
+      );
     }
     if (fab != null) {
-      args.add('floatingActionButton: ${_widgetInline(fab)}');
+      args.add(
+        _withNote(fab, 'floatingActionButton: ${_widgetInline(fab)}'),
+      );
     }
     if (drawer != null) {
-      args.add('drawer: ${_widgetInline(drawer)}');
+      args.add(_withNote(drawer, 'drawer: ${_widgetInline(drawer)}'));
     }
     if (endDrawer != null) {
-      args.add('endDrawer: ${_widgetInline(endDrawer)}');
+      args.add(_withNote(endDrawer, 'endDrawer: ${_widgetInline(endDrawer)}'));
     }
 
     if (values['background'] != null) {
@@ -244,11 +297,11 @@ abstract final class DartCodeGenerator {
       args.add('resizeToAvoidBottomInset: false');
     }
 
-    final buffer = StringBuffer('Scaffold(');
+    final buffer = StringBuffer('Scaffold(\n  /* inicio de Scaffold */');
     for (final arg in args) {
       buffer.write('\n${_indent('$arg,', '  ')}');
     }
-    buffer.write('\n)');
+    buffer.write('\n  /* fin de Scaffold */\n)');
     return buffer.toString();
   }
 
@@ -262,6 +315,18 @@ abstract final class DartCodeGenerator {
       return raw;
     }
     return '// inicio de ${definition.label}\n$raw\n// fin de ${definition.label}';
+  }
+
+  /// Notas con comentarios de bloque (válidas dentro de expresiones).
+  static String _widgetBlock(CanvasNode node) {
+    final raw = _widgetRaw(node);
+    final definition = standardCatalog[node.type];
+    if (definition == null || node.type == 'screen') {
+      return raw;
+    }
+    return '/* inicio de ${definition.label} */\n'
+        '$raw\n'
+        '/* fin de ${definition.label} */';
   }
 
   static String _widgetRaw(CanvasNode node) {
@@ -353,6 +418,7 @@ abstract final class DartCodeGenerator {
         final event = _eventBody(
           props['onTap'] as String?,
           props['eventMessage'] as String? ?? '',
+          targetScreen: props['targetScreen'] as String?,
         );
         final callback = props['enabled'] == false
             ? 'null'
@@ -408,13 +474,34 @@ abstract final class DartCodeGenerator {
         final size = (props['size'] as num?)?.toDouble() ?? 24;
         final color = switch (props['color'] as String?) {
           'onSurface' => 'Theme.of(context).colorScheme.onSurface',
+          'onSurfaceVariant' =>
+            'Theme.of(context).colorScheme.onSurfaceVariant',
+          'primarySolid' => 'Theme.of(context).colorScheme.primary',
           'onPrimary' => 'Theme.of(context).colorScheme.onPrimary',
           'inherit' => null,
-          _ => 'Theme.of(context).colorScheme.primary',
+          _ => colorExpressionFor(props['color'] as String?),
         };
         final colorArg = color == null ? '' : ', color: $color';
+        final fill = (props['fill'] as num?)?.toDouble() ?? 0;
+        final semantic = _escape(props['semanticLabel'] as String? ?? '');
+        final shadow = props['shadow'] == true;
+        final shadowColor =
+            colorExpressionFor(props['shadowColor'] as String?) ??
+            'Theme.of(context).colorScheme.onSurface';
+        final extras = <String>[
+          if (fill > 0) 'fill: ${_number(fill)}',
+          if (props['textDirection'] == 'rtl')
+            'textDirection: TextDirection.rtl',
+          if (semantic.isNotEmpty) "semanticLabel: '$semantic'",
+          if (shadow)
+            'shadows: [BoxShadow(color: $shadowColor, '
+                'blurRadius: ${_number((props['shadowBlur'] as num?)?.toDouble() ?? 8)}, '
+                'offset: Offset(${_number((props['shadowOffsetX'] as num?)?.toDouble() ?? 4)}, '
+                '${_number((props['shadowOffsetY'] as num?)?.toDouble() ?? 4)}))]',
+        ];
+        final extraArg = extras.isEmpty ? '' : ', ${extras.join(', ')}';
         return 'Icon(${_iconName(props['icon'] as String?)}, '
-            'size: ${_number(size)}$colorArg)';
+            'size: ${_number(size)}$colorArg$extraArg)';
 
       case 'divider':
         return 'Divider('
@@ -586,10 +673,12 @@ abstract final class DartCodeGenerator {
         final focusBody = _eventBody(
           props['onFocus'] as String?,
           props['eventMessage'] as String? ?? '',
+          targetScreen: props['targetScreen'] as String?,
         );
         final blurBody = _eventBody(
           props['onBlur'] as String?,
           props['eventMessage'] as String? ?? '',
+          targetScreen: props['targetScreen'] as String?,
         );
         if (focusBody == null && blurBody == null) {
           return field;
@@ -689,8 +778,225 @@ abstract final class DartCodeGenerator {
       case 'appBar':
         return _appBarWidget('AppBar', _appBarArgs(node));
 
+      case 'expanded':
+        final flex = (props['flex'] as num?)?.round() ?? 1;
+        final child = node.children.isEmpty
+            ? 'const SizedBox.shrink()'
+            : _widgetBlock(node.children.first);
+        return 'Expanded(\n'
+            '  flex: $flex,\n'
+            '  child: ${_inline('', child, '  ')},\n'
+            ')';
+
+      case 'flexible':
+        final flex = (props['flex'] as num?)?.round() ?? 1;
+        final fit = props['fit'] == 'tight' ? 'FlexFit.tight' : 'FlexFit.loose';
+        final child = node.children.isEmpty
+            ? 'const SizedBox.shrink()'
+            : _widgetBlock(node.children.first);
+        return 'Flexible(\n'
+            '  flex: $flex,\n'
+            '  fit: $fit,\n'
+            '  child: ${_inline('', child, '  ')},\n'
+            ')';
+
+      case 'spacer':
+        final flex = (props['flex'] as num?)?.round() ?? 1;
+        return 'Spacer(flex: $flex)';
+
+      case 'navigationRail':
+        final selected = (props['selected'] as num?)?.round() ?? 0;
+        final destinations = <String>[
+          for (var index = 0; index < node.children.length; index++)
+            '  NavigationRailDestination(\n'
+                '    icon: ${_inline('', _widgetBlock(node.children[index]), '    ')},\n'
+                "    label: Text('Destino ${index + 1}'),\n"
+                '  ),',
+        ];
+        final background = colorExpressionFor(
+          props['backgroundColor'] as String?,
+        );
+        final labelType = switch (props['labelType']) {
+          'none' => 'NavigationRailLabelType.none',
+          'all' => 'NavigationRailLabelType.all',
+          _ => 'NavigationRailLabelType.selected',
+        };
+        return 'SizedBox(\n'
+            '  height: 400,\n'
+            '  child: NavigationRail(\n'
+            '    selectedIndex: $selected,\n'
+            '    labelType: $labelType,\n'
+            '${background == null ? '' : '    backgroundColor: $background,\n'}'
+            '    onDestinationSelected: (index) {},\n'
+            '    destinations: [\n${_indent(destinations.join('\n'), '      ')}\n    ],\n'
+            '  ),\n'
+            ')';
+
+      case 'navigationDrawer':
+        final drawerChildren = node.children
+            .map((child) => _indent('${_widget(child)},', '    '))
+            .join('\n');
+        final background = colorExpressionFor(
+          props['backgroundColor'] as String?,
+        );
+        return 'SizedBox(\n'
+            '  width: 300,\n'
+            '  height: 600,\n'
+            '  child: NavigationDrawer(\n'
+            '${background == null ? '' : '    backgroundColor: $background,\n'}'
+            '    children: [\n${_indent(drawerChildren, '      ')}\n    ],\n'
+            '  ),\n'
+            ')';
+
+      case 'popupMenu':
+        final icon = _iconName(props['icon'] as String?);
+        final tooltip = _escape(props['tooltip'] as String? ?? '');
+        final item1 = _escape(props['item1'] as String? ?? '');
+        final item2 = _escape(props['item2'] as String? ?? '');
+        final item3 = _escape(props['item3'] as String? ?? '');
+        final message = _escape(props['eventMessage'] as String? ?? '');
+        return 'PopupMenuButton<int>(\n'
+            '  icon: const Icon($icon),\n'
+            '${tooltip.isEmpty ? '' : "  tooltip: '$tooltip',\n"}'
+            '  onSelected: (value) {\n'
+            '${message.isEmpty ? '' : "    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('$message')));\n"}'
+            '  },\n'
+            '  itemBuilder: (context) => [\n'
+            "    PopupMenuItem(value: 0, child: Text('$item1')),\n"
+            "    PopupMenuItem(value: 1, child: Text('$item2')),\n"
+            "    PopupMenuItem(value: 2, child: Text('$item3')),\n"
+            '  ],\n'
+            ')';
+
+      case 'stepper':
+        final count = ((props['steps'] as num?)?.round() ?? 3).clamp(2, 6);
+        final current = ((props['current'] as num?)?.round() ?? 0).clamp(
+          0,
+          count - 1,
+        );
+        final vertical = props['vertical'] != false;
+        final showControls = props['showControls'] == true;
+        final steps = <String>[
+          for (var index = 0; index < count; index++)
+            '  Step(\n'
+                "    title: Text('Paso ${index + 1}'),\n"
+                "    content: Text('Contenido del paso ${index + 1}'),\n"
+                '    isActive: ${index <= current},\n'
+                '  ),',
+        ];
+        return 'Stepper(\n'
+            '  currentStep: $current,\n'
+            '  type: ${vertical ? 'StepperType.vertical' : 'StepperType.horizontal'},\n'
+            '  controlsBuilder: (context, details) => '
+            '${showControls ? 'Row(children: [TextButton(onPressed: details.onStepContinue, child: const Text(\'Continuar\')), TextButton(onPressed: details.onStepCancel, child: const Text(\'Atrás\'))])' : 'const SizedBox.shrink()'},\n'
+            '  steps: [\n${steps.join('\n')}\n  ],\n'
+            ')';
+
+      case 'transform':
+        final rotation =
+            (props['rotation'] as num?)?.toDouble() ?? 0;
+        final scale = (props['scale'] as num?)?.toDouble() ?? 1;
+        final translateX =
+            (props['translateX'] as num?)?.toDouble() ?? 0;
+        final translateY =
+            (props['translateY'] as num?)?.toDouble() ?? 0;
+        final child = node.children.isEmpty
+            ? 'const SizedBox.shrink()'
+            : _widgetBlock(node.children.first);
+        return 'Transform.rotate(\n'
+            '  angle: ${_number(rotation)} * 0.017453292519943295,\n'
+            '  child: Transform.scale(\n'
+            '    scale: ${_number(scale)},\n'
+            '    child: Transform.translate(\n'
+            '      offset: Offset(${_number(translateX)}, ${_number(translateY)}),\n'
+            '      child: ${_inline('', child, '      ')},\n'
+            '    ),\n'
+            '  ),\n'
+            ')';
+
+      case 'intrinsicWidth':
+        final step = (props['stepWidth'] as num?)?.toDouble() ?? 0;
+        final child = node.children.isEmpty
+            ? 'const SizedBox.shrink()'
+            : _widgetBlock(node.children.first);
+        return 'IntrinsicWidth(\n'
+            '${step > 0 ? '  stepWidth: ${_number(step)},\n' : ''}'
+            '  child: ${_inline('', child, '  ')},\n'
+            ')';
+
+      case 'intrinsicHeight':
+        final child = node.children.isEmpty
+            ? 'const SizedBox.shrink()'
+            : _widgetBlock(node.children.first);
+        return 'IntrinsicHeight(\n'
+            '  child: ${_inline('', child, '  ')},\n'
+            ')';
+
+      case 'dropdownMenu':
+        final label = _escape(props['label'] as String? ?? '');
+        final options = [
+          _escape(props['option1'] as String? ?? ''),
+          _escape(props['option2'] as String? ?? ''),
+          _escape(props['option3'] as String? ?? ''),
+        ];
+        final selected =
+            ((props['selected'] as num?)?.round() ?? 0).clamp(0, 2);
+        return 'DropdownMenu<String>(\n'
+            "  initialSelection: '${options[selected]}',\n"
+            "  label: const Text('$label'),\n"
+            '  onSelected: (value) {},\n'
+            '  dropdownMenuEntries: [\n'
+            '${options.map((option) => "    DropdownMenuEntry(value: '$option', label: '$option'),").join('\n')}\n'
+            '  ],\n'
+            ')';
+
+      case 'dataTable':
+        final columns = ((props['columns'] as num?)?.round() ?? 3).clamp(
+          2,
+          5,
+        );
+        final rows = ((props['rows'] as num?)?.round() ?? 3).clamp(1, 10);
+        final checkbox = props['showCheckbox'] == true;
+        final columnCode = [
+          for (var column = 0; column < columns; column++)
+            "    DataColumn(label: Text('Columna ${column + 1}')),",
+        ].join('\n');
+        final rowCode = [
+          for (var row = 0; row < rows; row++)
+            '    DataRow(\n'
+                '${checkbox ? '      selected: ${row == 0},\n      onSelectChanged: (value) {},\n' : ''}'
+                '      cells: [\n'
+                '${[for (var column = 0; column < columns; column++) "        DataCell(Text('Fila ${row + 1}')),"].join('\n')}\n'
+                '      ],\n'
+                '    ),',
+        ].join('\n');
+        return 'SingleChildScrollView(\n'
+            '  scrollDirection: Axis.horizontal,\n'
+            '  child: DataTable(\n'
+            '    columns: [\n$columnCode\n    ],\n'
+            '    rows: [\n$rowCode\n    ],\n'
+            '  ),\n'
+            ')';
+
+      case 'table':
+        final columns = ((props['columns'] as num?)?.round() ?? 2).clamp(1, 5);
+        final rows = ((props['rows'] as num?)?.round() ?? 2).clamp(1, 8);
+        final border = props['border'] != false;
+        final rowCode = [
+          for (var row = 0; row < rows; row++)
+            '    TableRow(\n'
+                '      children: [\n'
+                '${[for (var column = 0; column < columns; column++) "        Padding(padding: const EdgeInsets.all(8), child: Text('R${row + 1} C${column + 1}')),"].join('\n')}\n'
+                '      ],\n'
+                '    ),',
+        ].join('\n');
+        return 'Table(\n'
+            '${border ? '  border: TableBorder.all(color: Theme.of(context).dividerColor),\n' : ''}'
+            '  children: [\n$rowCode\n  ],\n'
+            ')';
+
       case 'bottomNav':
-        final navItems = <String>[];
+        final destinations = <String>[];
         for (final child in node.children) {
           if (child.type != 'icon' && child.type != 'navItem') {
             continue;
@@ -700,67 +1006,174 @@ abstract final class DartCodeGenerator {
             for (final spec in definition.properties)
               spec.key: spec.coerce(child.properties[spec.key]),
           };
-          navItems.add(
-            "  BottomNavigationBarItem("
-            "icon: Icon(${_iconName(childValues['icon'] as String?)}), "
-            "label: '${_escape(childValues['label'] as String? ?? '')}'),",
+          final icon = childValues['icon'] as String? ?? 'home';
+          final selectedIcon = childValues['selectedIcon'] as String? ?? '';
+          final label = _escape(childValues['label'] as String? ?? '');
+          final showLabel = childValues['showLabel'] != false;
+          final tooltip = _escape(childValues['tooltip'] as String? ?? '');
+          final semantic = _escape(
+            childValues['semanticLabel'] as String? ?? '',
+          );
+          final enabled = childValues['enabled'] != false;
+          final size =
+              (childValues['size'] as num?)?.toDouble() ?? 24;
+          final fill = (childValues['fill'] as num?)?.toDouble() ?? 0;
+          final shadow = childValues['shadow'] == true;
+          final shadowColor =
+              colorExpressionFor(childValues['shadowColor'] as String?) ??
+              'Theme.of(context).colorScheme.onSurface';
+
+          String iconCode(String name, String? colorValue) {
+            final color = colorExpressionFor(colorValue);
+            final args = <String>['size: ${_number(size)}'];
+            if (color != null) {
+              args.add('color: $color');
+            }
+            if (fill > 0) {
+              args.add('fill: ${_number(fill)}');
+            }
+            if (childValues['textDirection'] == 'rtl') {
+              args.add('textDirection: TextDirection.rtl');
+            }
+            if (semantic.isNotEmpty) {
+              args.add("semanticLabel: '$semantic'");
+            }
+            if (shadow) {
+              args.add(
+                'shadows: [BoxShadow(color: $shadowColor, '
+                'blurRadius: ${_number((childValues['shadowBlur'] as num?)?.toDouble() ?? 8)}, '
+                'offset: Offset(${_number((childValues['shadowOffsetX'] as num?)?.toDouble() ?? 4)}, '
+                '${_number((childValues['shadowOffsetY'] as num?)?.toDouble() ?? 4)}))]',
+              );
+            }
+            return 'Icon(${_iconName(name)}, ${args.join(', ')})';
+          }
+
+          final normalColor = childValues['color'] as String?;
+          final rawSelectedColor = childValues['selectedColor'] as String?;
+          final selectedColor =
+              rawSelectedColor == null ||
+                  rawSelectedColor.isEmpty ||
+                  rawSelectedColor == 'inherit'
+              ? normalColor
+              : rawSelectedColor;
+          destinations.add(
+            '  // inicio de ${definition.label}\n'
+            '  NavigationDestination(\n'
+            '    icon: ${iconCode(icon, normalColor)},\n'
+            '    selectedIcon: ${iconCode(selectedIcon.isEmpty ? icon : selectedIcon, selectedColor)},\n'
+            "    label: '${showLabel ? label : ''}',\n"
+            '${tooltip.isEmpty ? '' : "    tooltip: '$tooltip',\n"}'
+            '${enabled ? '' : '    enabled: false,\n'}'
+            '  ),\n'
+            '  // fin de ${definition.label}',
           );
         }
 
-        if (navItems.isEmpty) {
+        if (destinations.isEmpty) {
           // Compatibilidad con pantallas viejas (solo guardaban la cantidad).
           final count =
               int.tryParse(node.properties['items']?.toString() ?? '3') ?? 3;
           const labels = ['Inicio', 'Buscar', 'Favorito', 'Ajustes', 'Perfil'];
           const icons = ['home', 'search', 'favorite', 'settings', 'person'];
           for (var index = 0; index < count; index++) {
-            navItems.add(
-              "  BottomNavigationBarItem("
-              "icon: Icon(${_iconName(icons[index])}), "
+            destinations.add(
+              '  NavigationDestination('
+              'icon: const Icon(${_iconName(icons[index])}), '
               "label: '${labels[index]}'),",
             );
           }
         }
+        // NavigationBar requiere al menos dos destinos.
+        const minLabels = ['Inicio', 'Buscar'];
+        const minIcons = ['home', 'search'];
+        while (destinations.length < 2) {
+          final index = destinations.length;
+          destinations.add(
+            '  NavigationDestination('
+            'icon: const Icon(${_iconName(minIcons[index])}), '
+            "label: '${minLabels[index]}'),",
+          );
+        }
 
         final selected = ((props['selected'] as num?)?.round() ?? 0)
-            .clamp(0, navItems.length - 1)
+            .clamp(0, destinations.length - 1)
             .toInt();
         final background = colorExpressionFor(
           props['backgroundColor'] as String?,
         );
-        final selectedColor = colorExpressionFor(
-          props['selectedItemColor'] as String?,
+        final indicator = colorExpressionFor(
+          props['indicatorColor'] as String?,
         );
-        final unselectedColor = colorExpressionFor(
-          props['unselectedItemColor'] as String?,
+        final shadow = colorExpressionFor(
+          props['shadowColor'] as String?,
         );
+        final height = (props['height'] as num?)?.toDouble() ?? 80;
         final elevation = (props['elevation'] as num?)?.toDouble() ?? 8;
-        final iconSize = (props['iconSize'] as num?)?.toDouble() ?? 24;
-        final selectedFont =
-            (props['selectedFontSize'] as num?)?.toDouble() ?? 14;
-        final unselectedFont =
-            (props['unselectedFontSize'] as num?)?.toDouble() ?? 12;
-
+        final duration =
+            (props['animationDuration'] as num?)?.round() ?? 500;
+        final labelBehavior = switch (props['labelBehavior']) {
+          'onlyShowSelected' =>
+            'NavigationDestinationLabelBehavior.onlyShowSelected',
+          'alwaysHide' => 'NavigationDestinationLabelBehavior.alwaysHide',
+          _ => 'NavigationDestinationLabelBehavior.alwaysShow',
+        };
+        final shape = switch (props['indicatorShape']) {
+          'circle' => 'const CircleBorder()',
+          'rectangle' =>
+            'RoundedRectangleBorder(borderRadius: BorderRadius.circular(8))',
+          _ => 'const StadiumBorder()',
+        };
+        final message = _escape(props['eventMessage'] as String? ?? '');
+        final onChange = props['onChangeAction'] == 'message'
+            ? 'ScaffoldMessenger.of(context).showSnackBar('
+                  "const SnackBar(content: Text('$message')));"
+            : '';
         final args = <String>[
-          'currentIndex: $selected',
-          'type: ${props['type'] == 'shifting' ? 'BottomNavigationBarType.shifting' : 'BottomNavigationBarType.fixed'}',
+          'selectedIndex: $selected',
+          'destinations: [\n${destinations.join('\n')}\n  ]',
           if (background != null) 'backgroundColor: $background',
-          if (selectedColor != null) 'selectedItemColor: $selectedColor',
-          if (unselectedColor != null) 'unselectedItemColor: $unselectedColor',
+          if (indicator != null) 'indicatorColor: $indicator',
+          'height: ${_number(height)}',
           if (elevation != 8) 'elevation: ${_number(elevation)}',
-          if (iconSize != 24) 'iconSize: ${_number(iconSize)}',
-          if (selectedFont != 14)
-            'selectedFontSize: ${_number(selectedFont)}',
-          if (unselectedFont != 12)
-            'unselectedFontSize: ${_number(unselectedFont)}',
-          if (props['showSelectedLabels'] == false)
-            'showSelectedLabels: false',
-          if (props['showUnselectedLabels'] == false)
-            'showUnselectedLabels: false',
-          'items: const [\n${navItems.join('\n')}\n  ]',
+          if (shadow != null) 'shadowColor: $shadow',
+          'indicatorShape: $shape',
+          'labelBehavior: $labelBehavior',
+          'animationDuration: const Duration(milliseconds: $duration)',
+          'onDestinationSelected: (index) {\n$onChange\n  }',
         ];
-        return 'BottomNavigationBar(\n'
-            '${args.map((arg) => _indent('$arg,', '  ')).join('\n')}\n'
+        final selectedIconColor =
+            colorExpressionFor(props['selectedIconColor'] as String?) ??
+            'Theme.of(context).colorScheme.primary';
+        final unselectedIconColor =
+            colorExpressionFor(props['unselectedIconColor'] as String?) ??
+            'Theme.of(context).colorScheme.onSurfaceVariant';
+        final selectedLabelColor =
+            colorExpressionFor(props['selectedLabelColor'] as String?) ??
+            'Theme.of(context).colorScheme.primary';
+        final unselectedLabelColor =
+            colorExpressionFor(props['unselectedLabelColor'] as String?) ??
+            'Theme.of(context).colorScheme.onSurfaceVariant';
+        return 'NavigationBarTheme(\n'
+            '  data: NavigationBarThemeData(\n'
+            '    iconTheme: WidgetStateProperty.resolveWith((states) => IconThemeData(\n'
+            '      color: states.contains(WidgetState.selected)\n'
+            '          ? $selectedIconColor\n'
+            '          : $unselectedIconColor,\n'
+            '    )),\n'
+            '    labelTextStyle: WidgetStateProperty.resolveWith((states) => TextStyle(\n'
+            '      fontSize: 12,\n'
+            '      fontWeight: states.contains(WidgetState.selected)\n'
+            '          ? FontWeight.w600\n'
+            '          : FontWeight.w500,\n'
+            '      color: states.contains(WidgetState.selected)\n'
+            '          ? $selectedLabelColor\n'
+            '          : $unselectedLabelColor,\n'
+            '    )),\n'
+            '  ),\n'
+            '  child: NavigationBar(\n'
+            '${args.map((arg) => _indent('$arg,', '    ')).join('\n')}\n'
+            '  ),\n'
             ')';
 
       case 'tabs':
@@ -1126,6 +1539,7 @@ abstract final class DartCodeGenerator {
         final event = _eventBody(
           props['onTap'] as String?,
           props['eventMessage'] as String? ?? '',
+          targetScreen: props['targetScreen'] as String?,
         );
         final callback = event == null ? '() {}' : '() {\n    $event\n  }';
         final color = colorExpressionFor(props['color'] as String?);
@@ -1369,6 +1783,7 @@ abstract final class DartCodeGenerator {
         final event = _eventBody(
           props['onTap'] as String?,
           props['eventMessage'] as String? ?? '',
+          targetScreen: props['targetScreen'] as String?,
         );
         final callback = event == null ? '() {}' : '() {\n    $event\n  }';
         return 'InkWell(\n'
@@ -1573,6 +1988,45 @@ abstract final class DartCodeGenerator {
 
   /// Cuerpo de la pantalla: placeholder, un widget o columna con separación,
   /// envuelto en `Padding` cuando el editor aplica relleno.
+  /// Código de un hijo del body, respetando su alineación horizontal.
+  static String _bodyItem(CanvasNode node, {required bool single}) {
+    final definition = standardCatalog[node.type];
+    final widthSpec = definition?.propertyFor('widthMode');
+    final widthMode = widthSpec?.coerce(node.properties['widthMode']);
+    final raw = single ? _widgetBlock(node) : _widget(node);
+
+    if (widthMode != 'fit' || definition == null) {
+      if (!single) {
+        return raw;
+      }
+      // El lienzo estira el hijo único a todo el ancho del cuerpo.
+      return 'SizedBox(\n'
+          '  width: double.infinity,\n'
+          '  child: ${_inline('', raw, '  ')},\n'
+          ')';
+    }
+
+    final alignSpec =
+        definition.propertyFor('bodyAlignment') ??
+        (node.type == 'icon' ? definition.propertyFor('alignment') : null);
+    final value = alignSpec == null
+        ? 'start'
+        : alignSpec.coerce(node.properties[alignSpec.key]);
+    final alignment = switch (value) {
+      'center' => 'Alignment.center',
+      'end' => 'Alignment.centerRight',
+      _ => 'Alignment.centerLeft',
+    };
+    final inner = definition.acceptsChildren
+        ? raw
+        : 'IntrinsicWidth(\n  child: ${_inline('', raw, '  ')},\n)';
+    return 'Align(\n'
+        '  alignment: $alignment,\n'
+        '  heightFactor: 1,\n'
+        '  child: ${_inline('', inner, '  ')},\n'
+        ')';
+  }
+
   static String _bodyCode(
     List<CanvasNode> body, {
     Object? gap,
@@ -1585,10 +2039,13 @@ abstract final class DartCodeGenerator {
     if (body.isEmpty) {
       content = _emptyStateCode;
     } else if (body.length == 1) {
-      content = _widgetInline(body.first);
+      content = _bodyItem(body.first, single: true);
     } else {
       final children = body
-          .map((node) => _indent('${_widget(node)},', '    '))
+          .map(
+            (node) =>
+                _indent('${_bodyItem(node, single: false)},', '    '),
+          )
           .join('\n');
       content = 'Column(\n'
           '  spacing: ${_number(gapValue)},\n'
@@ -1655,12 +2112,20 @@ abstract final class DartCodeGenerator {
       value.replaceAll(r'\', r'\\').replaceAll("'", r"\'");
 
   /// Código Dart de una acción de evento, o `null` si no hace nada.
-  static String? _eventBody(String? action, String message) {
+  static String? _eventBody(
+    String? action,
+    String message, {
+    String? targetScreen,
+  }) {
     final text = _escape(message.isEmpty ? 'Acción ejecutada' : message);
     return switch (action) {
       'message' =>
         "ScaffoldMessenger.of(context).showSnackBar("
             "const SnackBar(content: Text('$text')));",
+      'navigate' =>
+        targetScreen == null || targetScreen.isEmpty
+            ? null
+            : "Navigator.pushNamed(context, '/screen/$targetScreen');",
       'drawer' => 'Scaffold.of(context).openDrawer();',
       'endDrawer' => 'Scaffold.of(context).openEndDrawer();',
       'back' => 'Navigator.of(context).maybePop();',

@@ -39,7 +39,11 @@ const _screen = CanvasNode(
         CanvasNode(
           id: 'act',
           type: 'icon',
-          properties: {'icon': 'settings', 'size': 20},
+          properties: {
+            'icon': 'settings',
+            'size': 20,
+            'color': 'primarySolid',
+          },
         ),
       ],
     ),

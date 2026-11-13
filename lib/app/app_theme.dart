@@ -22,6 +22,12 @@ abstract final class AppTheme {
   /// Color del foco/acento suave.
   static const Color primarySoft = Color(0xFFE6F4F1);
 
+  /// Color de selección del editor (visible sobre fondos claros y oscuros).
+  static const Color selection = Color(0xFF7C3AED);
+
+  /// Fondo suave para la fila seleccionada en Capas.
+  static const Color selectionSoft = Color(0xFFF3E8FF);
+
   /// Tema completo de la app.
   static ThemeData light() {
     final scheme = ColorScheme.fromSeed(

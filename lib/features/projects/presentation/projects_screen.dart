@@ -5,8 +5,10 @@ import 'package:modeladorflutter/features/auth/application/auth_providers.dart';
 import 'package:modeladorflutter/features/auth/domain/auth_user.dart';
 
 import '../application/projects_controller.dart';
+import '../../admin/application/admin_providers.dart';
 import '../domain/project.dart';
 import '../../editor/presentation/editor_screen.dart';
+import '../../admin/presentation/admin_screen.dart';
 import '../../../app/app_theme.dart';
 
 /// Claves usadas por los tests de la pantalla.
@@ -62,7 +64,24 @@ class ProjectsScreen extends ConsumerStatefulWidget {
 
 class _ProjectsScreenState extends ConsumerState<ProjectsScreen> {
   int _section = 0;
+  bool _isAdmin = false;
   final _scaffoldKey = GlobalKey<ScaffoldState>();
+
+  @override
+  void initState() {
+    super.initState();
+    _loadAdmin();
+  }
+
+  Future<void> _loadAdmin() async {
+    final result = await ref.read(adminRepositoryProvider).isAdmin();
+    if (!mounted) {
+      return;
+    }
+    if (result case Ok(value: final value)) {
+      setState(() => _isAdmin = value);
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -92,7 +111,16 @@ class _ProjectsScreenState extends ConsumerState<ProjectsScreen> {
             section: _section,
             onGoProjects: () => setState(() => _section = 1),
           );
-    void selectSection(int index) => setState(() => _section = index);
+    void openAdmin() => Navigator.of(context).push(
+      MaterialPageRoute(builder: (_) => const AdminScreen()),
+    );
+    void selectSection(int index) {
+      if (index == 5) {
+        openAdmin();
+        return;
+      }
+      setState(() => _section = index);
+    }
     void logout() => ref.read(authRepositoryProvider).signOut();
 
     return Scaffold(
@@ -104,9 +132,14 @@ class _ProjectsScreenState extends ConsumerState<ProjectsScreen> {
                 child: _DashboardSidebar(
                   section: _section,
                   user: widget.user,
+                  showAdmin: _isAdmin,
                   onSelect: (index) {
-                    selectSection(index);
                     Navigator.of(context).pop();
+                    if (index == 5) {
+                      openAdmin();
+                    } else {
+                      selectSection(index);
+                    }
                   },
                   onLogout: logout,
                 ),
@@ -178,26 +211,32 @@ class _ProjectsScreenState extends ConsumerState<ProjectsScreen> {
               ),
             ),
             const SizedBox(width: 10),
-            const Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Text(
-                  'Flutter Studio Apps',
-                  style: TextStyle(
-                    fontSize: 15,
-                    fontWeight: FontWeight.w700,
-                    color: AppTheme.textStrong,
+            const Flexible(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    'Flutter Studio Apps',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      fontSize: 15,
+                      fontWeight: FontWeight.w700,
+                      color: AppTheme.textStrong,
+                    ),
                   ),
-                ),
-                Text(
-                  'Modelador visual de apps',
-                  style: TextStyle(
-                    fontSize: 9.5,
-                    color: AppTheme.textMuted,
+                  Text(
+                    'Modelador visual de apps',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      fontSize: 9.5,
+                      color: AppTheme.textMuted,
+                    ),
                   ),
-                ),
-              ],
+                ],
+              ),
             ),
           ],
         ),
@@ -226,6 +265,7 @@ class _ProjectsScreenState extends ConsumerState<ProjectsScreen> {
                 _DashboardSidebar(
                   section: _section,
                   user: widget.user,
+                  showAdmin: _isAdmin,
                   onSelect: selectSection,
                   onLogout: logout,
                 ),
@@ -815,12 +855,14 @@ class _DashboardSidebar extends StatelessWidget {
   const _DashboardSidebar({
     required this.section,
     required this.user,
+    required this.showAdmin,
     required this.onSelect,
     required this.onLogout,
   });
 
   final int section;
   final SessionUser user;
+  final bool showAdmin;
   final ValueChanged<int> onSelect;
   final VoidCallback onLogout;
 
@@ -830,6 +872,7 @@ class _DashboardSidebar extends StatelessWidget {
     (Icons.menu_book_outlined, 'Recursos'),
     (Icons.settings_outlined, 'Configuración'),
     (Icons.help_outline, 'Ayuda'),
+    (Icons.admin_panel_settings_outlined, 'Administración'),
   ];
 
   @override
@@ -837,6 +880,7 @@ class _DashboardSidebar extends StatelessWidget {
     final initials = user.email.length >= 2
         ? user.email.substring(0, 2).toUpperCase()
         : 'FS';
+    final visibleItems = showAdmin ? _items : _items.sublist(0, 5);
 
     return Container(
       width: 240,
@@ -878,7 +922,7 @@ class _DashboardSidebar extends StatelessWidget {
               ],
             ),
           ),
-          for (var index = 0; index < _items.length; index++)
+          for (var index = 0; index < visibleItems.length; index++)
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 2),
               child: Material(
@@ -906,23 +950,27 @@ class _DashboardSidebar extends StatelessWidget {
                         ),
                         const SizedBox(width: 9),
                         Icon(
-                          _items[index].$1,
+                          visibleItems[index].$1,
                           size: 18,
                           color: index == section
                               ? AppTheme.primary
                               : AppTheme.textMuted,
                         ),
                         const SizedBox(width: 10),
-                        Text(
-                          _items[index].$2,
-                          style: TextStyle(
-                            fontSize: 12,
-                            fontWeight: index == section
-                                ? FontWeight.w600
-                                : FontWeight.w400,
-                            color: index == section
-                                ? AppTheme.primary
-                                : AppTheme.textMuted,
+                        Expanded(
+                          child: Text(
+                            visibleItems[index].$2,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                              fontSize: 12,
+                              fontWeight: index == section
+                                  ? FontWeight.w600
+                                  : FontWeight.w400,
+                              color: index == section
+                                  ? AppTheme.primary
+                                  : AppTheme.textMuted,
+                            ),
                           ),
                         ),
                       ],
@@ -1002,19 +1050,22 @@ class _DashboardSidebar extends StatelessWidget {
               ),
             ),
           ),
-          ListTile(
-            dense: true,
-            visualDensity: VisualDensity.compact,
-            leading: const Icon(
-              Icons.logout,
-              size: 17,
-              color: AppTheme.textMuted,
+          Material(
+            color: Colors.transparent,
+            child: ListTile(
+              dense: true,
+              visualDensity: VisualDensity.compact,
+              leading: const Icon(
+                Icons.logout,
+                size: 17,
+                color: AppTheme.textMuted,
+              ),
+              title: const Text(
+                'Cerrar sesión',
+                style: TextStyle(fontSize: 11, color: AppTheme.textMuted),
+              ),
+              onTap: onLogout,
             ),
-            title: const Text(
-              'Cerrar sesión',
-              style: TextStyle(fontSize: 11, color: AppTheme.textMuted),
-            ),
-            onTap: onLogout,
           ),
           const SizedBox(height: 8),
         ],

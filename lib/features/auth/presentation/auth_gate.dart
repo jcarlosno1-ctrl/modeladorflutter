@@ -1,9 +1,12 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:modeladorflutter/core/result.dart';
+import 'package:modeladorflutter/features/projects/application/projects_controller.dart';
 import 'package:modeladorflutter/features/projects/presentation/projects_screen.dart';
+import 'package:modeladorflutter/features/editor/application/editor_session.dart';
 
 import '../application/auth_providers.dart';
+import '../domain/auth_user.dart';
 import '../application/recovery_controller.dart';
 import '../application/startup_auth_error.dart';
 import 'forgot_password_screen.dart';
@@ -21,6 +24,20 @@ class AuthGate extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final auth = ref.watch(authStateProvider);
+    // Al cambiar de usuario hay que descartar listas y editores cacheados:
+    // si no, el siguiente usuario podría ver datos del anterior desde memoria.
+    ref.listen<AsyncValue<SessionUser?>>(authStateProvider, (previous, next) {
+      String? idOf(AsyncValue<SessionUser?>? state) => switch (state) {
+        AsyncData(:final value) => value?.id,
+        _ => null,
+      };
+      final before = idOf(previous);
+      final after = idOf(next);
+      if (before != after) {
+        ref.invalidate(projectsControllerProvider);
+        ref.invalidate(editorSessionProvider);
+      }
+    });
     final hasSession = switch (auth) {
       AsyncData(:final value) => value != null,
       _ => false,
@@ -58,7 +75,9 @@ class AuthGate extends ConsumerWidget {
 
     return switch (auth) {
       AsyncData(:final value) =>
-        value == null ? const LoginScreen() : ProjectsScreen(user: value),
+        value == null
+            ? const LoginScreen()
+            : ProjectsScreen(key: ValueKey(value.id), user: value),
       AsyncError(:final error) => _AuthErrorScreen(
         message: error is Failure
             ? error.message

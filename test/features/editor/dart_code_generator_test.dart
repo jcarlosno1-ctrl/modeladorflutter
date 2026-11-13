@@ -54,7 +54,7 @@ void main() {
       expect(code, contains('runApp(const MyApp());'));
       expect(code, contains('class MyApp extends StatelessWidget'));
       expect(code, contains('return MaterialApp('));
-      expect(code, contains('home: Scaffold('));
+      expect(code, contains('home: Builder('));
       expect(code, contains('Tu pantalla está vacía'));
       expect(code, contains('dashboard_customize_outlined'));
       expect(code, contains('Arrastra un widget'));
@@ -100,7 +100,8 @@ void main() {
       );
       expect(code, contains("Text('Hola')"));
       expect(code, contains('padding: const EdgeInsets.all(16)'));
-      expect(code, contains('bottomNavigationBar: BottomNavigationBar('));
+      expect(code, contains('bottomNavigationBar: NavigationBarTheme('));
+      expect(code, contains('NavigationBar('));
     });
 
     test('varios hijos generan Column con separación y relleno', () {

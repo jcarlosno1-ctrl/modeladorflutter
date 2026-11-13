@@ -129,6 +129,8 @@ String describeProperty(PropertySpec spec) {
           '${spec.max != null ? ' ≤ ${spec.max}' : ''}',
     PropertyType.boolean => 'Sí/No',
     PropertyType.choice => 'Opción',
+    PropertyType.destinationIndex => 'Destino (por nombre)',
+    PropertyType.screenTarget => 'Pantalla destino',
     PropertyType.color => 'Color (token o #RRGGBB)',
   };
 }

@@ -160,6 +160,20 @@ class CanvasNode {
     return null;
   }
 
+  /// Busca el padre directo de [nodeId], o `null` si no existe.
+  CanvasNode? findParent(String nodeId) {
+    for (final child in children) {
+      if (child.id == nodeId) {
+        return this;
+      }
+      final found = child.findParent(nodeId);
+      if (found != null) {
+        return found;
+      }
+    }
+    return null;
+  }
+
   /// Copia con la propiedad [key] del nodo [nodeId] reemplazada.
   ///
   /// Si el nodo no existe, devuelve `this` (misma instancia) para que el

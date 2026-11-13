@@ -1,7 +1,10 @@
+import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:modeladorflutter/core/result.dart';
 import 'package:modeladorflutter/features/auth/application/auth_providers.dart';
+import 'package:modeladorflutter/features/admin/application/admin_providers.dart';
+import 'package:modeladorflutter/features/admin/domain/admin_repository.dart';
 import 'package:modeladorflutter/features/projects/application/project_providers.dart';
 import 'package:modeladorflutter/features/projects/domain/project.dart';
 import 'package:modeladorflutter/features/projects/presentation/projects_screen.dart';
@@ -13,8 +16,9 @@ import '../../helpers/fake_project_repository.dart';
 /// Monta la app con sesión iniciada y el repositorio de proyectos inyectado.
 Future<void> _pumpSignedIn(
   WidgetTester tester,
-  FakeProjectRepository projects,
-) async {
+  FakeProjectRepository projects, {
+  AdminRepository? admin,
+}) async {
   final auth = FakeAuthRepository();
   addTearDown(auth.dispose);
   await auth.signIn(email: 'ana@example.com', password: 'secreta123');
@@ -24,6 +28,7 @@ Future<void> _pumpSignedIn(
       overrides: [
         authRepositoryProvider.overrideWithValue(auth),
         projectRepositoryProvider.overrideWithValue(projects),
+        if (admin != null) adminRepositoryProvider.overrideWithValue(admin),
       ],
       child: const ModeladorApp(),
     ),
@@ -39,6 +44,28 @@ Future<void> _createProject(WidgetTester tester, String name) async {
   await tester.enterText(find.byKey(ProjectsKeys.dialogName), name);
   await tester.tap(find.byKey(ProjectsKeys.dialogCreate));
   await tester.pumpAndSettle();
+}
+
+class _FakeAdmin implements AdminRepository {
+  _FakeAdmin(this.admin);
+
+  final bool admin;
+
+  @override
+  Future<Result<bool>> isAdmin() async => Ok(admin);
+
+  @override
+  Future<Result<AdminStats>> stats({DateTime? from, DateTime? to}) async {
+    return const Err(UnexpectedFailure('sin datos'));
+  }
+
+  @override
+  Future<Result<List<PlanUsage>>> usageByPlan({
+    DateTime? from,
+    DateTime? to,
+  }) async {
+    return const Err(UnexpectedFailure('sin datos'));
+  }
 }
 
 void main() {
@@ -148,5 +175,41 @@ void main() {
     expect(projects.deleteCalls, 1);
     expect(find.text('Mi app'), findsNothing);
     expect(find.text('Aún no tienes proyectos'), findsOneWidget);
+  });
+
+  testWidgets('oculta Administración a los usuarios normales', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(1400, 900);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(() {
+      tester.view.resetPhysicalSize();
+      tester.view.resetDevicePixelRatio();
+    });
+    await _pumpSignedIn(
+      tester,
+      FakeProjectRepository(),
+      admin: _FakeAdmin(false),
+    );
+
+    expect(find.text('Administración'), findsNothing);
+  });
+
+  testWidgets('muestra Administración a los administradores', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(1400, 900);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(() {
+      tester.view.resetPhysicalSize();
+      tester.view.resetDevicePixelRatio();
+    });
+    await _pumpSignedIn(
+      tester,
+      FakeProjectRepository(),
+      admin: _FakeAdmin(true),
+    );
+
+    expect(find.text('Administración'), findsOneWidget);
   });
 }

@@ -1,3 +1,5 @@
+import 'package:flutter/material.dart';
+
 /// Tipo de valor que acepta una propiedad.
 enum PropertyType {
   /// Texto de una línea.
@@ -17,18 +19,27 @@ enum PropertyType {
 
   /// Color: token del theme (`surface`, `low`, …) o hex `#RRGGBB`.
   color,
+
+  /// Índice de un destino dentro de la barra (se elige por nombre).
+  destinationIndex,
+
+  /// Id de otra pantalla del proyecto (se elige por nombre).
+  screenTarget,
 }
 
 /// Opción válida de una propiedad [PropertyType.choice].
 class PropertyChoice {
   /// Crea una opción.
-  const PropertyChoice(this.value, this.label);
+  const PropertyChoice(this.value, this.label, [this.icon]);
 
   /// Valor persistido.
   final String value;
 
   /// Etiqueta mostrada en el panel.
   final String label;
+
+  /// Icono representativo opcional (por ejemplo, en la lista de íconos).
+  final IconData? icon;
 }
 
 /// Esquema de una propiedad de un componente.
@@ -159,6 +170,40 @@ class PropertySpec {
        step = null,
        integer = false;
 
+  /// Índice de un destino; el panel lo muestra por el nombre del destino.
+  const PropertySpec.destinationIndex(
+    this.key,
+    this.label, {
+    this.defaultValue = 0,
+    this.group = 'General',
+    this.hint,
+    this.hidden = false,
+  }) : type = PropertyType.destinationIndex,
+       choices = const [],
+       min = null,
+       max = null,
+       maxLength = null,
+       step = null,
+       suffix = null,
+       integer = true;
+
+  /// Pantalla destino de una acción de navegación.
+  const PropertySpec.screenTarget(
+    this.key,
+    this.label, {
+    this.defaultValue = '',
+    this.group = 'General',
+    this.hint,
+    this.hidden = false,
+  }) : type = PropertyType.screenTarget,
+       choices = const [],
+       min = null,
+       max = null,
+       maxLength = null,
+       step = null,
+       suffix = null,
+       integer = false;
+
   /// Clave en el mapa de propiedades.
   final String key;
 
@@ -205,7 +250,11 @@ class PropertySpec {
   /// `true` si el default es neutro (0, vacío, heredar, ninguno o false) y
   /// por tanto la propiedad puede ocultarse tras el modo Avanzado.
   bool get isAdvancedByDefault {
-    if (hidden || type == PropertyType.color) {
+    if (hidden || type == PropertyType.color || key == 'initial') {
+      return false;
+    }
+    if (type == PropertyType.destinationIndex ||
+        type == PropertyType.screenTarget) {
       return false;
     }
     if (type == PropertyType.boolean) {
@@ -244,6 +293,12 @@ class PropertySpec {
         return value is bool;
       case PropertyType.choice:
         return value is String && choices.any((c) => c.value == value);
+      case PropertyType.destinationIndex:
+        return value is num &&
+            value >= 0 &&
+            value == value.round();
+      case PropertyType.screenTarget:
+        return value is String;
       case PropertyType.color:
         if (value is! String) {
           return false;

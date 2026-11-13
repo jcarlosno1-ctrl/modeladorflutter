@@ -4,11 +4,13 @@ import 'color_value.dart';
 import 'component_catalog.dart';
 import 'property_spec.dart';
 import 'widget_definition.dart';
+import '../presentation/editor_actions.dart';
 
 /// Acciones disponibles para los eventos de los controles.
 const _eventChoices = [
   PropertyChoice('none', 'Ninguna'),
   PropertyChoice('message', 'Mostrar mensaje'),
+  PropertyChoice('navigate', 'Ir a una pantalla'),
   PropertyChoice('drawer', 'Abrir menú'),
   PropertyChoice('endDrawer', 'Abrir menú derecho'),
   PropertyChoice('back', 'Volver atrás'),
@@ -27,6 +29,30 @@ const _alignmentChoices = [
   PropertyChoice('bottomRight', 'Inferior derecha'),
 ];
 
+/// Íconos disponibles en el catálogo, con su figura para el panel.
+const _iconChoices = [
+  PropertyChoice('star', 'Estrella', Icons.star_outline),
+  PropertyChoice('home', 'Inicio', Icons.home_outlined),
+  PropertyChoice('settings', 'Ajustes', Icons.settings_outlined),
+  PropertyChoice('favorite', 'Favorito', Icons.favorite_border),
+  PropertyChoice('add', 'Agregar', Icons.add),
+  PropertyChoice('search', 'Buscar', Icons.search),
+  PropertyChoice('arrow_back', 'Atrás', Icons.arrow_back),
+  PropertyChoice('arrow_forward', 'Avanzar', Icons.arrow_forward),
+  PropertyChoice('menu', 'Menú', Icons.menu),
+  PropertyChoice('close', 'Cerrar', Icons.close),
+  PropertyChoice('more_vert', 'Más', Icons.more_vert),
+  PropertyChoice('person', 'Perfil', Icons.person_outline),
+  PropertyChoice('folder', 'Carpeta', Icons.folder_outlined),
+  PropertyChoice('mail', 'Correo', Icons.mail_outline),
+  PropertyChoice('check', 'Check', Icons.check_circle_outline),
+  PropertyChoice('lock', 'Candado', Icons.lock_outline),
+  PropertyChoice('visibility', 'Ver', Icons.visibility_outlined),
+  PropertyChoice('calendar', 'Calendario', Icons.calendar_today_outlined),
+  PropertyChoice('download', 'Descargar', Icons.download_outlined),
+  PropertyChoice('notifications', 'Notificaciones', Icons.notifications_none),
+];
+
 Alignment _alignmentFor(String value) => switch (value) {
   'topCenter' => Alignment.topCenter,
   'topRight' => Alignment.topRight,
@@ -39,23 +65,45 @@ Alignment _alignmentFor(String value) => switch (value) {
   _ => Alignment.topLeft,
 };
 
-/// Acción de vista previa: muestra un SnackBar sin tocar el editor.
+/// Acción de vista previa: mensaje, navegación o volver.
 VoidCallback? _previewAction(BuildContext context, Props props, String key) {
   final action = props.choice(key);
   if (action.isEmpty || action == 'none') {
     return null;
   }
   final message = props.text('eventMessage');
-  final label = switch (action) {
-    'drawer' => 'Abrir menú',
-    'endDrawer' => 'Abrir menú derecho',
-    'back' => 'Volver atrás',
-    _ => message.isEmpty ? 'Acción ejecutada' : message,
-  };
+  final target = props.text('targetScreen');
 
-  return () => ScaffoldMessenger.of(context).showSnackBar(
-    SnackBar(content: Text(label)),
-  );
+  void showMessage(String text) {
+    ScaffoldMessenger.of(context)
+        .showSnackBar(SnackBar(content: Text(text)));
+  }
+
+  return () {
+    final actions = EditorActions.maybeOf(context);
+    switch (action) {
+      case 'navigate':
+        if (target.isEmpty) {
+          showMessage('Elegí una pantalla destino.');
+        } else if (actions != null) {
+          actions.onNavigateScreen(target);
+        } else {
+          showMessage('Ir a la pantalla seleccionada');
+        }
+      case 'back':
+        if (actions != null) {
+          actions.onBack();
+        } else {
+          showMessage('Volver atrás');
+        }
+      case 'drawer':
+        showMessage('Abrir menú');
+      case 'endDrawer':
+        showMessage('Abrir menú derecho');
+      default:
+        showMessage(message.isEmpty ? 'Acción ejecutada' : message);
+    }
+  };
 }
 
 /// Catálogo estándar (solo Flutter/Dart por ahora).
@@ -63,7 +111,9 @@ VoidCallback? _previewAction(BuildContext context, Props props, String key) {
 /// Agregar un widget = agregar una [WidgetDefinition] aquí. No hay forma de
 /// que un usuario cree componentes arbitrarios: el JSON solo puede referenciar
 /// estos `type`.
-final ComponentCatalog standardCatalog = ComponentCatalog(_definitions);
+final ComponentCatalog standardCatalog = ComponentCatalog(
+  _withBodyLayout(_definitions),
+);
 
 final List<WidgetDefinition> _definitions = [
   // --------------------------------------------------------------- pantalla
@@ -96,6 +146,13 @@ final List<WidgetDefinition> _definitions = [
         group: 'Comportamiento',
         hint: 'El cuerpo se desplaza si el contenido no entra.',
         defaultValue: true,
+      ),
+      PropertySpec.boolean(
+        'initial',
+        'Pantalla inicial',
+        group: 'Pantalla',
+        defaultValue: false,
+        hint: 'La app exportada abre en esta pantalla.',
       ),
       PropertySpec.color(
         'background',
@@ -331,9 +388,7 @@ final List<WidgetDefinition> _definitions = [
         style = style.copyWith(height: props.number('lineHeight'));
       }
       if (props.number('letterSpacing') != 0) {
-        style = style.copyWith(
-          letterSpacing: props.number('letterSpacing'),
-        );
+        style = style.copyWith(letterSpacing: props.number('letterSpacing'));
       }
       if (props.choice('fontStyle') == 'italic') {
         style = style.copyWith(fontStyle: FontStyle.italic);
@@ -447,11 +502,7 @@ final List<WidgetDefinition> _definitions = [
           PropertyChoice('search', 'Buscar'),
         ],
       ),
-      PropertySpec.boolean(
-        'fullWidth',
-        'Ancho completo',
-        group: 'Dimensiones',
-      ),
+      PropertySpec.boolean('fullWidth', 'Ancho completo', group: 'Dimensiones'),
       PropertySpec.choice(
         'onTap',
         'Al tocar',
@@ -466,6 +517,12 @@ final List<WidgetDefinition> _definitions = [
         group: 'Eventos',
         hint: 'Texto del SnackBar cuando la acción es Mensaje.',
         defaultValue: 'Acción ejecutada',
+      ),
+      PropertySpec.screenTarget(
+        'targetScreen',
+        'Pantalla destino',
+        group: 'Eventos',
+        hint: 'Solo se usa cuando la acción es Ir a una pantalla.',
       ),
     ],
     builder: (context, props, children) {
@@ -497,9 +554,7 @@ final List<WidgetDefinition> _definitions = [
       if (radius > 0) {
         style = style.copyWith(
           shape: WidgetStatePropertyAll(
-            RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(radius),
-            ),
+            RoundedRectangleBorder(borderRadius: BorderRadius.circular(radius)),
           ),
         );
       }
@@ -532,16 +587,8 @@ final List<WidgetDefinition> _definitions = [
           style: style,
           child: child,
         ),
-        'text' => TextButton(
-          onPressed: onPressed,
-          style: style,
-          child: child,
-        ),
-        _ => FilledButton(
-          onPressed: onPressed,
-          style: style,
-          child: child,
-        ),
+        'text' => TextButton(onPressed: onPressed, style: style, child: child),
+        _ => FilledButton(onPressed: onPressed, style: style, child: child),
       };
 
       return props.flag('fullWidth')
@@ -558,21 +605,7 @@ final List<WidgetDefinition> _definitions = [
       PropertySpec.choice(
         'icon',
         'Ícono',
-        choices: [
-          PropertyChoice('star', 'Estrella'),
-          PropertyChoice('home', 'Inicio'),
-          PropertyChoice('settings', 'Ajustes'),
-          PropertyChoice('favorite', 'Favorito'),
-          PropertyChoice('add', 'Agregar'),
-          PropertyChoice('search', 'Buscar'),
-          PropertyChoice('arrow_back', 'Atrás'),
-          PropertyChoice('menu', 'Menú'),
-          PropertyChoice('close', 'Cerrar'),
-          PropertyChoice('more_vert', 'Más'),
-          PropertyChoice('person', 'Perfil'),
-          PropertyChoice('folder', 'Carpeta'),
-          PropertyChoice('mail', 'Correo'),
-        ],
+        choices: _iconChoices,
         defaultValue: 'star',
       ),
       PropertySpec.number(
@@ -585,6 +618,17 @@ final List<WidgetDefinition> _definitions = [
         max: 96,
       ),
       PropertySpec.choice(
+        'alignment',
+        'Alinear',
+        group: 'Alineación',
+        choices: [
+          PropertyChoice('start', 'Izquierda'),
+          PropertyChoice('center', 'Centro'),
+          PropertyChoice('end', 'Derecha'),
+        ],
+        defaultValue: 'center',
+      ),
+      PropertySpec.choice(
         'position',
         'Ubicación en la barra',
         group: 'Barra superior',
@@ -594,17 +638,119 @@ final List<WidgetDefinition> _definitions = [
         ],
         defaultValue: 'actions',
       ),
-      PropertySpec.choice(
+      PropertySpec.color(
         'color',
         'Color',
         group: 'Colores',
         choices: [
-          PropertyChoice('primary', 'Primario'),
-          PropertyChoice('onSurface', 'Texto del tema'),
-          PropertyChoice('onPrimary', 'Sobre primario'),
           PropertyChoice('inherit', 'Heredar del contenedor'),
+          PropertyChoice('primarySolid', 'Primario'),
+          PropertyChoice('onSurface', 'Texto del tema'),
+          PropertyChoice('onSurfaceVariant', 'Texto secundario'),
         ],
-        defaultValue: 'primary',
+        defaultValue: 'inherit',
+        hint: 'Elegí un color del tema o escribí un hex.',
+      ),
+      PropertySpec.color(
+        'selectedColor',
+        'Color seleccionado',
+        group: 'Colores',
+        choices: [
+          PropertyChoice('inherit', 'Igual al normal'),
+          PropertyChoice('primarySolid', 'Primario'),
+          PropertyChoice('onSurface', 'Texto del tema'),
+        ],
+        defaultValue: 'inherit',
+      ),
+      PropertySpec.number(
+        'fill',
+        'Relleno / variante',
+        group: 'Diseño',
+        defaultValue: 0,
+        min: 0,
+        max: 1,
+        step: 0.1,
+        hint: '0 = contorno. Desde 0.5 usa la variante rellena.',
+      ),
+      PropertySpec.boolean(
+        'shadow',
+        'Sombra',
+        group: 'Sombra',
+        defaultValue: false,
+      ),
+      PropertySpec.color(
+        'shadowColor',
+        'Color de sombra',
+        group: 'Sombra',
+        choices: [
+          PropertyChoice('onSurface', 'Texto del tema'),
+          PropertyChoice('primarySolid', 'Primario'),
+        ],
+        defaultValue: 'onSurface',
+      ),
+      PropertySpec.number(
+        'shadowBlur',
+        'Difuminado',
+        group: 'Sombra',
+        suffix: 'px',
+        defaultValue: 8,
+        min: 0,
+        max: 48,
+        integer: true,
+      ),
+      PropertySpec.number(
+        'shadowOffsetX',
+        'Desplazamiento horizontal',
+        group: 'Sombra',
+        suffix: 'px',
+        defaultValue: 4,
+        min: -32,
+        max: 32,
+        integer: true,
+      ),
+      PropertySpec.number(
+        'shadowOffsetY',
+        'Desplazamiento vertical',
+        group: 'Sombra',
+        suffix: 'px',
+        defaultValue: 4,
+        min: -32,
+        max: 32,
+        integer: true,
+      ),
+      PropertySpec.choice(
+        'textDirection',
+        'Dirección del glifo',
+        group: 'Accesibilidad',
+        choices: [
+          PropertyChoice('ltr', 'Izquierda a derecha'),
+          PropertyChoice('rtl', 'Derecha a izquierda'),
+        ],
+        defaultValue: 'ltr',
+        hint: 'Solo afecta íconos direccionales como flechas.',
+      ),
+      PropertySpec.choice(
+        'onAction',
+        'Tipo de callback',
+        group: 'Eventos',
+        choices: [
+          PropertyChoice('none', 'Sin acción'),
+          PropertyChoice('message', 'Mostrar mensaje'),
+        ],
+        defaultValue: 'none',
+      ),
+      PropertySpec.text(
+        'eventMessage',
+        'Mensaje de ejemplo',
+        group: 'Eventos',
+        defaultValue: 'El usuario abrió este destino',
+      ),
+      PropertySpec.boolean(
+        'showLabel',
+        'Mostrar etiqueta',
+        group: 'Barra inferior',
+        defaultValue: true,
+        hint: 'Apagalo si querés solo el ícono.',
       ),
       PropertySpec.text(
         'label',
@@ -612,19 +758,62 @@ final List<WidgetDefinition> _definitions = [
         group: 'Barra inferior',
         hint: 'Se usa como etiqueta del ítem en la barra inferior.',
       ),
+      PropertySpec.choice(
+        'selectedIcon',
+        'Ícono seleccionado',
+        group: 'Barra inferior',
+        choices: [PropertyChoice('', 'Igual al normal'), ..._iconChoices],
+        defaultValue: '',
+      ),
+      PropertySpec.text(
+        'tooltip',
+        'Tooltip',
+        group: 'Barra inferior',
+        hint: 'Texto al mantener presionado el destino.',
+      ),
+      PropertySpec.boolean(
+        'enabled',
+        'Habilitado',
+        group: 'Barra inferior',
+        defaultValue: true,
+      ),
+      PropertySpec.text(
+        'semanticLabel',
+        'Descripción accesible',
+        group: 'Accesibilidad',
+        hint: 'Lo que lee el lector de pantalla.',
+      ),
     ],
     builder: (context, props, children) {
       final scheme = Theme.of(context).colorScheme;
-      final color = switch (props.choice('color')) {
-        'inherit' => IconTheme.of(context).color,
-        'onSurface' => scheme.onSurface,
-        'onPrimary' => scheme.onPrimary,
-        _ => scheme.primary,
-      };
+      final choice = props.choice('color');
+      final color = choice == 'inherit'
+          ? IconTheme.of(context).color
+          : colorForValue(choice, scheme);
+      final semantic = props.text('semanticLabel');
+      final fill = props.number('fill');
+      final shadow = props.flag('shadow');
       return Icon(
         iconDataFor(props.choice('icon')),
         size: props.number('size'),
         color: color,
+        fill: fill > 0 ? fill.clamp(0, 1) : null,
+        textDirection: props.choice('textDirection') == 'rtl'
+            ? TextDirection.rtl
+            : TextDirection.ltr,
+        shadows: shadow
+            ? [
+                BoxShadow(
+                  color: colorForValue(props.choice('shadowColor'), scheme),
+                  blurRadius: props.number('shadowBlur'),
+                  offset: Offset(
+                    props.number('shadowOffsetX'),
+                    props.number('shadowOffsetY'),
+                  ),
+                ),
+              ]
+            : null,
+        semanticLabel: semantic.isEmpty ? null : semantic,
       );
     },
   ),
@@ -775,11 +964,7 @@ final List<WidgetDefinition> _definitions = [
           PropertyChoice('check', 'Check'),
         ],
       ),
-      PropertySpec.boolean(
-        'selected',
-        'Seleccionada',
-        group: 'Estado',
-      ),
+      PropertySpec.boolean('selected', 'Seleccionada', group: 'Estado'),
       PropertySpec.boolean('dense', 'Compacta', group: 'Dimensiones'),
       PropertySpec.number(
         'shapeRadius',
@@ -832,9 +1017,7 @@ final List<WidgetDefinition> _definitions = [
             : null,
         selected: props.flag('selected'),
         dense: props.flag('dense'),
-        tileColor: tileColor.isEmpty
-            ? null
-            : colorForValue(tileColor, scheme),
+        tileColor: tileColor.isEmpty ? null : colorForValue(tileColor, scheme),
         shape: radius > 0
             ? RoundedRectangleBorder(
                 borderRadius: BorderRadius.circular(radius),
@@ -932,7 +1115,13 @@ final List<WidgetDefinition> _definitions = [
         ],
         defaultValue: 'start',
       ),
-      PropertySpec.number('gap', 'Separación', defaultValue: 8, min: 0, max: 64),
+      PropertySpec.number(
+        'gap',
+        'Separación',
+        defaultValue: 8,
+        min: 0,
+        max: 64,
+      ),
       PropertySpec.choice(
         'crossAlign',
         'Alineación transversal',
@@ -944,6 +1133,12 @@ final List<WidgetDefinition> _definitions = [
           PropertyChoice('stretch', 'Estirar'),
         ],
         defaultValue: 'start',
+      ),
+      PropertySpec.screenTarget(
+        'targetScreen',
+        'Pantalla destino',
+        group: 'Eventos',
+        hint: 'Solo se usa cuando la acción es Ir a una pantalla.',
       ),
     ],
     builder: (context, props, children) {
@@ -965,7 +1160,13 @@ final List<WidgetDefinition> _definitions = [
     icon: Icons.view_column_outlined,
     acceptsChildren: true,
     properties: const [
-      PropertySpec.number('gap', 'Separación', defaultValue: 8, min: 0, max: 64),
+      PropertySpec.number(
+        'gap',
+        'Separación',
+        defaultValue: 8,
+        min: 0,
+        max: 64,
+      ),
       PropertySpec.choice(
         'align',
         'Alineación principal',
@@ -1004,10 +1205,95 @@ final List<WidgetDefinition> _definitions = [
         children: [
           for (var index = 0; index < children.length; index++) ...[
             if (index > 0) SizedBox(width: gap),
-            Expanded(child: children[index]),
+            // Expanded/Flexible/Spacer ya traen su propio ParentDataWidget.
+            if (children[index] is Flexible || children[index] is Spacer)
+              children[index]
+            else
+              Expanded(child: children[index]),
           ],
         ],
       );
+    },
+  ),
+  WidgetDefinition(
+    type: 'expanded',
+    label: 'Expanded',
+    category: ComponentCategory.layout,
+    icon: Icons.open_in_full,
+    acceptsChildren: true,
+    requiresFlexParent: true,
+    flutterClass: 'Expanded',
+    properties: const [
+      PropertySpec.number(
+        'flex',
+        'Flex',
+        defaultValue: 1,
+        min: 1,
+        max: 12,
+        integer: true,
+      ),
+    ],
+    builder: (context, props, children) {
+      return Expanded(
+        flex: props.number('flex').round().clamp(1, 12),
+        child: children.isEmpty ? const SizedBox.shrink() : children.first,
+      );
+    },
+  ),
+  WidgetDefinition(
+    type: 'flexible',
+    label: 'Flexible',
+    category: ComponentCategory.layout,
+    icon: Icons.open_in_full_outlined,
+    acceptsChildren: true,
+    requiresFlexParent: true,
+    flutterClass: 'Flexible',
+    properties: const [
+      PropertySpec.number(
+        'flex',
+        'Flex',
+        defaultValue: 1,
+        min: 1,
+        max: 12,
+        integer: true,
+      ),
+      PropertySpec.choice(
+        'fit',
+        'Ajuste',
+        choices: [
+          PropertyChoice('loose', 'Flexible (loose)'),
+          PropertyChoice('tight', 'Rígido (tight)'),
+        ],
+        defaultValue: 'loose',
+      ),
+    ],
+    builder: (context, props, children) {
+      return Flexible(
+        flex: props.number('flex').round().clamp(1, 12),
+        fit: props.choice('fit') == 'tight' ? FlexFit.tight : FlexFit.loose,
+        child: children.isEmpty ? const SizedBox.shrink() : children.first,
+      );
+    },
+  ),
+  WidgetDefinition(
+    type: 'spacer',
+    label: 'Spacer',
+    category: ComponentCategory.layout,
+    icon: Icons.space_bar,
+    requiresFlexParent: true,
+    flutterClass: 'Spacer',
+    properties: const [
+      PropertySpec.number(
+        'flex',
+        'Flex',
+        defaultValue: 1,
+        min: 1,
+        max: 12,
+        integer: true,
+      ),
+    ],
+    builder: (context, props, children) {
+      return Spacer(flex: props.number('flex').round().clamp(1, 12));
     },
   ),
   WidgetDefinition(
@@ -1024,13 +1310,7 @@ final List<WidgetDefinition> _definitions = [
         min: 0,
         max: 64,
       ),
-      PropertySpec.number(
-        'radius',
-        'Radio',
-        defaultValue: 12,
-        min: 0,
-        max: 40,
-      ),
+      PropertySpec.number('radius', 'Radio', defaultValue: 12, min: 0, max: 40),
       PropertySpec.color(
         'backgroundColor',
         'Fondo',
@@ -1063,10 +1343,7 @@ final List<WidgetDefinition> _definitions = [
     ],
     builder: (context, props, children) {
       final scheme = Theme.of(context).colorScheme;
-      final background = colorForValue(
-        props.choice('backgroundColor'),
-        scheme,
-      );
+      final background = colorForValue(props.choice('backgroundColor'), scheme);
       final gradient = props.flag('gradient');
       return Container(
         padding: EdgeInsets.all(props.number('padding')),
@@ -1307,7 +1584,7 @@ final List<WidgetDefinition> _definitions = [
         hint: 'Redondea las esquinas de abajo de la barra.',
         defaultValue: 0,
         min: 0,
-        max: 32,
+        max: 100,
       ),
       PropertySpec.boolean(
         'hideOnScroll',
@@ -1342,7 +1619,7 @@ final List<WidgetDefinition> _definitions = [
         suffix: 'px',
         defaultValue: 56,
         min: 40,
-        max: 96,
+        max: 400,
       ),
       PropertySpec.color(
         'backgroundColor',
@@ -1486,7 +1763,7 @@ final List<WidgetDefinition> _definitions = [
     category: ComponentCategory.navigation,
     icon: Icons.space_dashboard_outlined,
     slot: ComponentSlot.bottom,
-    flutterClass: 'BottomNavigationBar',
+    flutterClass: 'NavigationBar',
     acceptsChildren: true,
     properties: const [
       PropertySpec.boolean(
@@ -1496,24 +1773,11 @@ final List<WidgetDefinition> _definitions = [
         hint: 'Si lo apagás, la barra no se dibuja ni se exporta.',
         defaultValue: true,
       ),
-      PropertySpec.number(
+      PropertySpec.destinationIndex(
         'selected',
         'Seleccionado',
         group: 'Barra inferior',
-        hint: 'Índice del ítem resaltado.',
-        defaultValue: 0,
-        min: 0,
-        max: 4,
-      ),
-      PropertySpec.choice(
-        'type',
-        'Tipo',
-        group: 'Barra inferior',
-        choices: [
-          PropertyChoice('fixed', 'Fijo'),
-          PropertyChoice('shifting', 'Desplazable'),
-        ],
-        defaultValue: 'fixed',
+        hint: 'Destino resaltado, por nombre.',
       ),
       PropertySpec.color(
         'backgroundColor',
@@ -1525,26 +1789,6 @@ final List<WidgetDefinition> _definitions = [
           PropertyChoice('primary', 'Primario'),
         ],
       ),
-      PropertySpec.color(
-        'selectedItemColor',
-        'Color del ítem activo',
-        group: 'Colores',
-        choices: [
-          PropertyChoice('primary', 'Primario'),
-          PropertyChoice('onSurface', 'Texto del tema'),
-          PropertyChoice('tertiary', 'Terciario'),
-        ],
-      ),
-      PropertySpec.color(
-        'unselectedItemColor',
-        'Color del ítem inactivo',
-        group: 'Colores',
-        choices: [
-          PropertyChoice('onSurface', 'Texto del tema'),
-          PropertyChoice('primary', 'Primario'),
-          PropertyChoice('low', 'Superficie baja'),
-        ],
-      ),
       PropertySpec.number(
         'elevation',
         'Elevación',
@@ -1554,75 +1798,155 @@ final List<WidgetDefinition> _definitions = [
         min: 0,
         max: 24,
       ),
-      PropertySpec.number(
-        'iconSize',
-        'Tamaño de ícono',
-        group: 'Diseño',
-        suffix: 'px',
-        defaultValue: 24,
-        min: 16,
-        max: 36,
+      PropertySpec.color(
+        'indicatorColor',
+        'Color del indicador',
+        group: 'Colores',
+        choices: [
+          PropertyChoice('low', 'Superficie baja'),
+          PropertyChoice('primary', 'Primario suave'),
+          PropertyChoice('tertiary', 'Terciario suave'),
+        ],
+        hint: 'Vacío = color del tema.',
+      ),
+      PropertySpec.color(
+        'selectedIconColor',
+        'Color de ícono activo',
+        group: 'Colores',
+        choices: [
+          PropertyChoice('primarySolid', 'Primario'),
+          PropertyChoice('onSurface', 'Texto del tema'),
+          PropertyChoice('tertiary', 'Terciario'),
+        ],
+        defaultValue: 'primarySolid',
+        hint: 'Respaldo cuando el destino no define su color.',
+      ),
+      PropertySpec.color(
+        'unselectedIconColor',
+        'Color de ícono inactivo',
+        group: 'Colores',
+        choices: [
+          PropertyChoice('onSurfaceVariant', 'Texto secundario'),
+          PropertyChoice('onSurface', 'Texto del tema'),
+          PropertyChoice('primarySolid', 'Primario'),
+        ],
+        defaultValue: 'onSurfaceVariant',
+      ),
+      PropertySpec.color(
+        'selectedLabelColor',
+        'Color de etiqueta activa',
+        group: 'Colores',
+        choices: [
+          PropertyChoice('primarySolid', 'Primario'),
+          PropertyChoice('onSurface', 'Texto del tema'),
+          PropertyChoice('tertiary', 'Terciario'),
+        ],
+        defaultValue: 'primarySolid',
+      ),
+      PropertySpec.color(
+        'unselectedLabelColor',
+        'Color de etiqueta inactiva',
+        group: 'Colores',
+        choices: [
+          PropertyChoice('onSurfaceVariant', 'Texto secundario'),
+          PropertyChoice('onSurface', 'Texto del tema'),
+          PropertyChoice('primarySolid', 'Primario'),
+        ],
+        defaultValue: 'onSurfaceVariant',
       ),
       PropertySpec.number(
-        'selectedFontSize',
-        'Tamaño etiqueta activa',
+        'height',
+        'Altura',
         group: 'Diseño',
         suffix: 'px',
-        defaultValue: 14,
-        min: 10,
-        max: 20,
+        defaultValue: 80,
+        min: 56,
+        max: 120,
+        integer: true,
+      ),
+      PropertySpec.color(
+        'shadowColor',
+        'Color de sombra',
+        group: 'Colores',
+        choices: [
+          PropertyChoice('onSurface', 'Texto del tema'),
+          PropertyChoice('primarySolid', 'Primario'),
+        ],
+        hint: 'Vacío = sombra del tema.',
       ),
       PropertySpec.number(
-        'unselectedFontSize',
-        'Tamaño etiqueta inactiva',
-        group: 'Diseño',
-        suffix: 'px',
-        defaultValue: 12,
-        min: 10,
-        max: 20,
+        'animationDuration',
+        'Duración de animación',
+        group: 'Comportamiento',
+        suffix: 'ms',
+        defaultValue: 500,
+        min: 100,
+        max: 2000,
+        integer: true,
       ),
-      PropertySpec.boolean(
-        'showSelectedLabels',
-        'Mostrar etiqueta activa',
+      PropertySpec.choice(
+        'indicatorShape',
+        'Forma del indicador',
+        group: 'Diseño',
+        choices: [
+          PropertyChoice('stadium', 'Píldora'),
+          PropertyChoice('circle', 'Círculo'),
+          PropertyChoice('rectangle', 'Rectángulo redondeado'),
+        ],
+        defaultValue: 'stadium',
+      ),
+      PropertySpec.choice(
+        'labelBehavior',
+        'Etiquetas',
         group: 'Barra inferior',
-        defaultValue: true,
+        choices: [
+          PropertyChoice('alwaysShow', 'Siempre'),
+          PropertyChoice('onlyShowSelected', 'Solo la activa'),
+          PropertyChoice('alwaysHide', 'Nunca'),
+        ],
+        defaultValue: 'alwaysShow',
       ),
-      PropertySpec.boolean(
-        'showUnselectedLabels',
-        'Mostrar etiquetas inactivas',
-        group: 'Barra inferior',
-        defaultValue: true,
+      PropertySpec.choice(
+        'onChangeAction',
+        'Al cambiar de destino',
+        group: 'Eventos',
+        choices: [
+          PropertyChoice('none', 'Ninguna'),
+          PropertyChoice('message', 'Mostrar mensaje'),
+        ],
+        defaultValue: 'none',
+      ),
+      PropertySpec.text(
+        'eventMessage',
+        'Mensaje del evento',
+        group: 'Eventos',
+        defaultValue: 'Seleccionaste un destino',
+      ),
+      PropertySpec.screenTarget(
+        'targetScreen',
+        'Pantalla destino',
+        group: 'Eventos',
+        hint: 'Solo se usa cuando la acción es Ir a una pantalla.',
       ),
     ],
     builder: (context, props, children) {
-      const labels = ['Inicio', 'Buscar', 'Favorito', 'Ajustes', 'Perfil'];
-      const icons = [
-        Icons.home,
-        Icons.search,
-        Icons.favorite,
-        Icons.settings,
-        Icons.person,
-      ];
-      final fallback = (children.length >= 2 ? children.length : 3).clamp(
-        2,
-        5,
-      );
-      final selected = props.number('selected').round().clamp(
-        0,
-        fallback - 1,
-      );
+      final selected = props.number('selected').round().clamp(0, 2);
 
-      return BottomNavigationBar(
-        currentIndex: selected,
-        type: BottomNavigationBarType.fixed,
-        showSelectedLabels: props.flag('showSelectedLabels'),
-        showUnselectedLabels: props.flag('showUnselectedLabels'),
-        items: [
-          for (var index = 0; index < fallback; index++)
-            BottomNavigationBarItem(
-              icon: Icon(icons[index]),
-              label: labels[index],
-            ),
+      return NavigationBar(
+        selectedIndex: selected,
+        onDestinationSelected: (_) {},
+        destinations: const [
+          NavigationDestination(
+            icon: Icon(Icons.home_outlined),
+            selectedIcon: Icon(Icons.home),
+            label: 'Inicio',
+          ),
+          NavigationDestination(icon: Icon(Icons.search), label: 'Buscar'),
+          NavigationDestination(
+            icon: Icon(Icons.favorite_border),
+            selectedIcon: Icon(Icons.favorite),
+            label: 'Favorito',
+          ),
         ],
       );
     },
@@ -1799,14 +2123,11 @@ final List<WidgetDefinition> _definitions = [
       final scheme = Theme.of(context).colorScheme;
       final background = props.choice('backgroundColor');
       final foreground = props.choice('foregroundColor');
-      final icon = Icon(
-        switch (props.choice('icon')) {
-          'edit' => Icons.edit,
-          'save' => Icons.save,
-          _ => Icons.add,
-        },
-        size: props.number('iconSize'),
-      );
+      final icon = Icon(switch (props.choice('icon')) {
+        'edit' => Icons.edit,
+        'save' => Icons.save,
+        _ => Icons.add,
+      }, size: props.number('iconSize'));
       final label = props.text('extendedLabel');
       final tooltip = props.text('tooltip');
 
@@ -1934,11 +2255,7 @@ final List<WidgetDefinition> _definitions = [
         suffix: 'px',
         hint: '0 = radio del tema.',
       ),
-      PropertySpec.boolean(
-        'readOnly',
-        'Solo lectura',
-        group: 'Comportamiento',
-      ),
+      PropertySpec.boolean('readOnly', 'Solo lectura', group: 'Comportamiento'),
       PropertySpec.choice(
         'onFocus',
         'Al recibir foco',
@@ -1961,6 +2278,12 @@ final List<WidgetDefinition> _definitions = [
         group: 'Eventos',
         hint: 'Texto del SnackBar cuando la acción es Mensaje.',
         defaultValue: 'Acción ejecutada',
+      ),
+      PropertySpec.screenTarget(
+        'targetScreen',
+        'Pantalla destino',
+        group: 'Eventos',
+        hint: 'Solo se usa cuando la acción es Ir a una pantalla.',
       ),
     ],
     builder: (context, props, children) {
@@ -2348,9 +2671,7 @@ final List<WidgetDefinition> _definitions = [
       return Wrap(
         spacing: props.number('spacing'),
         runSpacing: props.number('runSpacing'),
-        crossAxisAlignment: _wrapCross(
-          props.choice('crossAxisAlignment'),
-        ),
+        crossAxisAlignment: _wrapCross(props.choice('crossAxisAlignment')),
         alignment: switch (props.choice('alignment')) {
           'center' => WrapAlignment.center,
           'end' => WrapAlignment.end,
@@ -2529,11 +2850,7 @@ final List<WidgetDefinition> _definitions = [
         integer: true,
         suffix: 'px',
       ),
-      PropertySpec.boolean(
-        'showDeleteIcon',
-        'Mostrar borrar',
-        group: 'Estado',
-      ),
+      PropertySpec.boolean('showDeleteIcon', 'Mostrar borrar', group: 'Estado'),
     ],
     builder: (context, props, children) {
       final scheme = Theme.of(context).colorScheme;
@@ -2553,10 +2870,7 @@ final List<WidgetDefinition> _definitions = [
                 size: 16,
                 color: colorForValue(props.choice('textColor'), scheme),
               ),
-        backgroundColor: colorForValue(
-          props.choice('backgroundColor'),
-          scheme,
-        ),
+        backgroundColor: colorForValue(props.choice('backgroundColor'), scheme),
         elevation: props.number('elevation'),
         onDeleted: props.flag('showDeleteIcon') ? () {} : null,
       );
@@ -2654,10 +2968,7 @@ final List<WidgetDefinition> _definitions = [
 
       Widget avatar = CircleAvatar(
         radius: borderWidth > 0 ? radius - borderWidth : radius,
-        backgroundColor: colorForValue(
-          props.choice('backgroundColor'),
-          scheme,
-        ),
+        backgroundColor: colorForValue(props.choice('backgroundColor'), scheme),
         backgroundImage: imageUrl.isEmpty ? null : NetworkImage(imageUrl),
         onBackgroundImageError: imageUrl.isEmpty ? null : (_, _) {},
         child: Text(
@@ -2971,9 +3282,7 @@ final List<WidgetDefinition> _definitions = [
                 ? null
                 : Text(
                     props.text('subtitle'),
-                    style: TextStyle(
-                      fontSize: (fontSize - 1).clamp(8, 22),
-                    ),
+                    style: TextStyle(fontSize: (fontSize - 1).clamp(8, 22)),
                   ),
           ),
         ),
@@ -3169,6 +3478,12 @@ final List<WidgetDefinition> _definitions = [
         'Mensaje del evento',
         group: 'Eventos',
         defaultValue: 'Acción ejecutada',
+      ),
+      PropertySpec.screenTarget(
+        'targetScreen',
+        'Pantalla destino',
+        group: 'Eventos',
+        hint: 'Solo se usa cuando la acción es Ir a una pantalla.',
       ),
     ],
     builder: (context, props, children) {
@@ -3616,11 +3931,10 @@ final List<WidgetDefinition> _definitions = [
             color: colorForValue(props.choice('textColor'), scheme),
           ),
         ),
-        backgroundColor: colorForValue(
-          props.choice('backgroundColor'),
-          scheme,
-        ),
-        child: children.isEmpty ? const Icon(Icons.notifications_outlined) : children.first,
+        backgroundColor: colorForValue(props.choice('backgroundColor'), scheme),
+        child: children.isEmpty
+            ? const Icon(Icons.notifications_outlined)
+            : children.first,
       );
     },
   ),
@@ -3748,10 +4062,7 @@ final List<WidgetDefinition> _definitions = [
       final scheme = Theme.of(context).colorScheme;
       return MaterialBanner(
         content: Text(props.text('message')),
-        backgroundColor: colorForValue(
-          props.choice('backgroundColor'),
-          scheme,
-        ),
+        backgroundColor: colorForValue(props.choice('backgroundColor'), scheme),
         actions: [
           TextButton(onPressed: () {}, child: Text(props.text('actionLabel'))),
         ],
@@ -3991,6 +4302,294 @@ final List<WidgetDefinition> _definitions = [
   ),
 
   WidgetDefinition(
+    type: 'navigationRail',
+    label: 'Riel de navegación',
+    category: ComponentCategory.navigation,
+    icon: Icons.view_sidebar_outlined,
+    acceptsChildren: true,
+    flutterClass: 'NavigationRail',
+    properties: const [
+      PropertySpec.destinationIndex(
+        'selected',
+        'Seleccionado',
+        hint: 'Destino resaltado, por nombre.',
+      ),
+      PropertySpec.choice(
+        'labelType',
+        'Etiquetas',
+        group: 'Barra inferior',
+        choices: [
+          PropertyChoice('none', 'Nunca'),
+          PropertyChoice('selected', 'Solo la activa'),
+          PropertyChoice('all', 'Siempre'),
+        ],
+        defaultValue: 'selected',
+      ),
+      PropertySpec.color(
+        'backgroundColor',
+        'Color de fondo',
+        group: 'Colores',
+        choices: [
+          PropertyChoice('surface', 'Superficie'),
+          PropertyChoice('low', 'Superficie baja'),
+        ],
+      ),
+    ],
+    builder: (context, props, children) {
+      if (children.isEmpty) {
+        return const _EmptySlot();
+      }
+      final scheme = Theme.of(context).colorScheme;
+      final selected = props
+          .number('selected')
+          .round()
+          .clamp(0, children.length - 1);
+      return SizedBox(
+        height: 400,
+        child: NavigationRail(
+          selectedIndex: selected,
+          onDestinationSelected: (_) {},
+          labelType: switch (props.choice('labelType')) {
+            'none' => NavigationRailLabelType.none,
+            'all' => NavigationRailLabelType.all,
+            _ => NavigationRailLabelType.selected,
+          },
+          backgroundColor: colorForValue(
+            props.choice('backgroundColor'),
+            scheme,
+          ),
+          destinations: [
+            for (var index = 0; index < children.length; index++)
+              NavigationRailDestination(
+                icon: children[index],
+                label: Text('Destino ${index + 1}'),
+              ),
+          ],
+        ),
+      );
+    },
+  ),
+
+  WidgetDefinition(
+    type: 'navigationDrawer',
+    label: 'Menú de navegación',
+    category: ComponentCategory.navigation,
+    icon: Icons.vertical_split_outlined,
+    acceptsChildren: true,
+    flutterClass: 'NavigationDrawer',
+    properties: const [
+      PropertySpec.color(
+        'backgroundColor',
+        'Color de fondo',
+        group: 'Colores',
+        choices: [
+          PropertyChoice('surface', 'Superficie'),
+          PropertyChoice('low', 'Superficie baja'),
+        ],
+      ),
+    ],
+    builder: (context, props, children) {
+      final scheme = Theme.of(context).colorScheme;
+      return SizedBox(
+        width: 300,
+        height: 600,
+        child: NavigationDrawer(
+          backgroundColor: colorForValue(
+            props.choice('backgroundColor'),
+            scheme,
+          ),
+          children: children.isEmpty ? const [_EmptySlot()] : children,
+        ),
+      );
+    },
+  ),
+
+  WidgetDefinition(
+    type: 'popupMenu',
+    label: 'Menú emergente',
+    category: ComponentCategory.navigation,
+    icon: Icons.more_horiz,
+    flutterClass: 'PopupMenuButton',
+    properties: const [
+      PropertySpec.choice(
+        'icon',
+        'Ícono',
+        choices: _iconChoices,
+        defaultValue: 'more_vert',
+      ),
+      PropertySpec.text('tooltip', 'Tooltip'),
+      PropertySpec.text(
+        'item1',
+        'Opción 1',
+        group: 'Contenido',
+        defaultValue: 'Editar',
+      ),
+      PropertySpec.text(
+        'item2',
+        'Opción 2',
+        group: 'Contenido',
+        defaultValue: 'Compartir',
+      ),
+      PropertySpec.text(
+        'item3',
+        'Opción 3',
+        group: 'Contenido',
+        defaultValue: 'Eliminar',
+      ),
+      PropertySpec.text(
+        'eventMessage',
+        'Mensaje del evento',
+        group: 'Eventos',
+        defaultValue: 'Opción elegida',
+      ),
+      PropertySpec.screenTarget(
+        'targetScreen',
+        'Pantalla destino',
+        group: 'Eventos',
+        hint: 'Solo se usa cuando la acción es Ir a una pantalla.',
+      ),
+    ],
+    builder: (context, props, children) {
+      final tooltip = props.text('tooltip');
+      return PopupMenuButton<int>(
+        icon: Icon(iconDataFor(props.choice('icon'))),
+        tooltip: tooltip.isEmpty ? null : tooltip,
+        onSelected: (_) {},
+        itemBuilder: (context) => [
+          PopupMenuItem(value: 0, child: Text(props.text('item1'))),
+          PopupMenuItem(value: 1, child: Text(props.text('item2'))),
+          PopupMenuItem(value: 2, child: Text(props.text('item3'))),
+        ],
+      );
+    },
+  ),
+
+  WidgetDefinition(
+    type: 'stepper',
+    label: 'Pasos',
+    category: ComponentCategory.material,
+    icon: Icons.linear_scale_outlined,
+    flutterClass: 'Stepper',
+    properties: const [
+      PropertySpec.number(
+        'steps',
+        'Cantidad de pasos',
+        defaultValue: 3,
+        min: 2,
+        max: 6,
+        integer: true,
+      ),
+      PropertySpec.number(
+        'current',
+        'Paso actual',
+        defaultValue: 0,
+        min: 0,
+        max: 5,
+        integer: true,
+      ),
+      PropertySpec.boolean(
+        'vertical',
+        'Vertical',
+        group: 'Diseño',
+        defaultValue: true,
+      ),
+      PropertySpec.boolean(
+        'showControls',
+        'Mostrar controles',
+        group: 'Comportamiento',
+        defaultValue: false,
+      ),
+    ],
+    builder: (context, props, children) {
+      final count = props.number('steps').round().clamp(2, 6);
+      final current = props.number('current').round().clamp(0, count - 1);
+      final showControls = props.flag('showControls');
+      return Stepper(
+        currentStep: current,
+        type: props.flag('vertical')
+            ? StepperType.vertical
+            : StepperType.horizontal,
+        controlsBuilder: (context, details) => showControls
+            ? Row(
+                children: [
+                  TextButton(
+                    onPressed: details.onStepContinue,
+                    child: const Text('Continuar'),
+                  ),
+                  TextButton(
+                    onPressed: details.onStepCancel,
+                    child: const Text('Atrás'),
+                  ),
+                ],
+              )
+            : const SizedBox.shrink(),
+        steps: [
+          for (var index = 0; index < count; index++)
+            Step(
+              title: Text('Paso ${index + 1}'),
+              content: Text('Contenido del paso ${index + 1}'),
+              isActive: index <= current,
+            ),
+        ],
+      );
+    },
+  ),
+
+  WidgetDefinition(
+    type: 'transform',
+    label: 'Transformación',
+    category: ComponentCategory.layout,
+    icon: Icons.rotate_right,
+    acceptsChildren: true,
+    flutterClass: 'Transform',
+    properties: const [
+      PropertySpec.number(
+        'rotation',
+        'Rotación',
+        suffix: '°',
+        defaultValue: 0,
+        min: -180,
+        max: 180,
+      ),
+      PropertySpec.number('scale', 'Escala', defaultValue: 1, min: 0.5, max: 2),
+      PropertySpec.number(
+        'translateX',
+        'Mover X',
+        group: 'Diseño',
+        suffix: 'px',
+        defaultValue: 0,
+        min: -100,
+        max: 100,
+      ),
+      PropertySpec.number(
+        'translateY',
+        'Mover Y',
+        group: 'Diseño',
+        suffix: 'px',
+        defaultValue: 0,
+        min: -100,
+        max: 100,
+      ),
+    ],
+    builder: (context, props, children) {
+      final child = children.isEmpty ? const _EmptySlot() : children.first;
+      return Transform.rotate(
+        angle: props.number('rotation') * 0.017453292519943295,
+        child: Transform.scale(
+          scale: props.number('scale'),
+          child: Transform.translate(
+            offset: Offset(
+              props.number('translateX'),
+              props.number('translateY'),
+            ),
+            child: child,
+          ),
+        ),
+      );
+    },
+  ),
+
+  WidgetDefinition(
     type: 'inkWell',
     label: 'Área táctil',
     category: ComponentCategory.input,
@@ -4011,6 +4610,12 @@ final List<WidgetDefinition> _definitions = [
         group: 'Eventos',
         defaultValue: 'Acción ejecutada',
       ),
+      PropertySpec.screenTarget(
+        'targetScreen',
+        'Pantalla destino',
+        group: 'Eventos',
+        hint: 'Solo se usa cuando la acción es Ir a una pantalla.',
+      ),
     ],
     builder: (context, props, children) {
       final action = _previewAction(context, props, 'onTap');
@@ -4023,7 +4628,256 @@ final List<WidgetDefinition> _definitions = [
       );
     },
   ),
+
+  WidgetDefinition(
+    type: 'intrinsicWidth',
+    label: 'Ancho intrínseco',
+    category: ComponentCategory.layout,
+    icon: Icons.swap_horiz,
+    acceptsChildren: true,
+    flutterClass: 'IntrinsicWidth',
+    properties: const [
+      PropertySpec.number(
+        'stepWidth',
+        'Incremento',
+        group: 'Diseño',
+        suffix: 'px',
+        defaultValue: 0,
+        min: 0,
+        max: 100,
+        integer: true,
+        hint: '0 = usa el ancho natural del hijo.',
+      ),
+    ],
+    builder: (context, props, children) {
+      final step = props.number('stepWidth');
+      return IntrinsicWidth(
+        stepWidth: step > 0 ? step : null,
+        child: children.isEmpty ? const _EmptySlot() : children.first,
+      );
+    },
+  ),
+
+  WidgetDefinition(
+    type: 'intrinsicHeight',
+    label: 'Alto intrínseco',
+    category: ComponentCategory.layout,
+    icon: Icons.swap_vert,
+    acceptsChildren: true,
+    flutterClass: 'IntrinsicHeight',
+    properties: const [],
+    builder: (context, props, children) {
+      return IntrinsicHeight(
+        child: children.isEmpty ? const _EmptySlot() : children.first,
+      );
+    },
+  ),
+
+  WidgetDefinition(
+    type: 'dropdownMenu',
+    label: 'Menú desplegable',
+    category: ComponentCategory.input,
+    icon: Icons.arrow_drop_down_circle_outlined,
+    flutterClass: 'DropdownMenu',
+    properties: const [
+      PropertySpec.text(
+        'label',
+        'Etiqueta',
+        defaultValue: 'Seleccioná una opción',
+      ),
+      PropertySpec.text('option1', 'Opción 1', defaultValue: 'Opción A'),
+      PropertySpec.text('option2', 'Opción 2', defaultValue: 'Opción B'),
+      PropertySpec.text('option3', 'Opción 3', defaultValue: 'Opción C'),
+      PropertySpec.number(
+        'selected',
+        'Seleccionada',
+        defaultValue: 0,
+        min: 0,
+        max: 2,
+        integer: true,
+      ),
+    ],
+    builder: (context, props, children) {
+      final options = [
+        props.text('option1'),
+        props.text('option2'),
+        props.text('option3'),
+      ];
+      final selected = props.number('selected').round().clamp(0, 2);
+      return DropdownMenu<String>(
+        initialSelection: options[selected],
+        label: Text(props.text('label')),
+        onSelected: (_) {},
+        dropdownMenuEntries: [
+          for (final option in options)
+            DropdownMenuEntry(value: option, label: option),
+        ],
+      );
+    },
+  ),
+
+  WidgetDefinition(
+    type: 'dataTable',
+    label: 'Tabla de datos',
+    category: ComponentCategory.material,
+    icon: Icons.table_chart_outlined,
+    flutterClass: 'DataTable',
+    properties: const [
+      PropertySpec.number(
+        'columns',
+        'Columnas',
+        group: 'Datos',
+        defaultValue: 3,
+        min: 2,
+        max: 5,
+        integer: true,
+      ),
+      PropertySpec.number(
+        'rows',
+        'Filas',
+        group: 'Datos',
+        defaultValue: 3,
+        min: 1,
+        max: 10,
+        integer: true,
+      ),
+      PropertySpec.boolean(
+        'showCheckbox',
+        'Mostrar selección',
+        group: 'Datos',
+        defaultValue: false,
+      ),
+    ],
+    builder: (context, props, children) {
+      final columns = props.number('columns').round().clamp(2, 5);
+      final rows = props.number('rows').round().clamp(1, 10);
+      final checkbox = props.flag('showCheckbox');
+      return SingleChildScrollView(
+        scrollDirection: Axis.horizontal,
+        child: DataTable(
+          columns: [
+            for (var column = 0; column < columns; column++)
+              DataColumn(label: Text('Columna ${column + 1}')),
+          ],
+          rows: [
+            for (var row = 0; row < rows; row++)
+              DataRow(
+                selected: checkbox && row == 0,
+                onSelectChanged: checkbox ? (_) {} : null,
+                cells: [
+                  for (var column = 0; column < columns; column++)
+                    DataCell(Text('Fila ${row + 1}')),
+                ],
+              ),
+          ],
+        ),
+      );
+    },
+  ),
+
+  WidgetDefinition(
+    type: 'table',
+    label: 'Tabla',
+    category: ComponentCategory.layout,
+    icon: Icons.grid_on,
+    flutterClass: 'Table',
+    properties: const [
+      PropertySpec.number(
+        'columns',
+        'Columnas',
+        group: 'Datos',
+        defaultValue: 2,
+        min: 1,
+        max: 5,
+        integer: true,
+      ),
+      PropertySpec.number(
+        'rows',
+        'Filas',
+        group: 'Datos',
+        defaultValue: 2,
+        min: 1,
+        max: 8,
+        integer: true,
+      ),
+      PropertySpec.boolean(
+        'border',
+        'Mostrar bordes',
+        group: 'Diseño',
+        defaultValue: true,
+      ),
+    ],
+    builder: (context, props, children) {
+      final columns = props.number('columns').round().clamp(1, 5);
+      final rows = props.number('rows').round().clamp(1, 8);
+      final border = props.flag('border');
+      return Table(
+        border: border
+            ? TableBorder.all(color: Theme.of(context).dividerColor)
+            : null,
+        children: [
+          for (var row = 0; row < rows; row++)
+            TableRow(
+              children: [
+                for (var column = 0; column < columns; column++)
+                  Padding(
+                    padding: const EdgeInsets.all(8),
+                    child: Text('R${row + 1} C${column + 1}'),
+                  ),
+              ],
+            ),
+        ],
+      );
+    },
+  ),
 ];
+
+const _fitWidthByDefault = {'icon', 'avatar', 'chip'};
+
+/// Agrega a los controles del body el ancho (expandir/ajustar) y la
+/// alineación horizontal cuando el control se ajusta a su contenido.
+List<WidgetDefinition> _withBodyLayout(List<WidgetDefinition> definitions) {
+  return [
+    for (final definition in definitions)
+      if (definition.slot != ComponentSlot.body ||
+          definition.type == 'screen')
+        definition
+      else
+        definition.copyWith(
+          properties: [
+            ...definition.properties,
+            if (definition.propertyFor('widthMode') == null)
+              PropertySpec.choice(
+                'widthMode',
+                'Ancho',
+                group: 'Alineación',
+                choices: const [
+                  PropertyChoice('expand', 'Expandir'),
+                  PropertyChoice('fit', 'Ajustar al contenido'),
+                ],
+                defaultValue: _fitWidthByDefault.contains(definition.type)
+                    ? 'fit'
+                    : 'expand',
+                hint: 'Ajustar permite alinear el control en el cuerpo.',
+              ),
+            if (definition.propertyFor('bodyAlignment') == null &&
+                definition.propertyFor('alignment') == null)
+              const PropertySpec.choice(
+                'bodyAlignment',
+                'Alinear',
+                group: 'Alineación',
+                choices: [
+                  PropertyChoice('start', 'Izquierda'),
+                  PropertyChoice('center', 'Centro'),
+                  PropertyChoice('end', 'Derecha'),
+                ],
+                defaultValue: 'start',
+                hint: 'Solo aplica cuando el ancho es Ajustar.',
+              ),
+          ],
+        ),
+  ];
+}
 
 TextAlign _textAlign(String value) => switch (value) {
   'center' => TextAlign.center,
@@ -4060,13 +4914,15 @@ WrapCrossAlignment _wrapCross(String value) => switch (value) {
   _ => WrapCrossAlignment.start,
 };
 
-CrossAxisAlignment _crossAxis(String value) => switch (value) {  'center' => CrossAxisAlignment.center,
+CrossAxisAlignment _crossAxis(String value) => switch (value) {
+  'center' => CrossAxisAlignment.center,
   'end' => CrossAxisAlignment.end,
   'stretch' => CrossAxisAlignment.stretch,
   _ => CrossAxisAlignment.start,
 };
 
-MainAxisAlignment _mainAxis(String value) => switch (value) {  'center' => MainAxisAlignment.center,
+MainAxisAlignment _mainAxis(String value) => switch (value) {
+  'center' => MainAxisAlignment.center,
   'end' => MainAxisAlignment.end,
   'spaceBetween' => MainAxisAlignment.spaceBetween,
   _ => MainAxisAlignment.start,
@@ -4220,10 +5076,7 @@ class _EmptySlot extends StatelessWidget {
           const SizedBox(width: 8),
           Text(
             'Suelta widgets aquí',
-            style: TextStyle(
-              fontSize: 11.5,
-              color: scheme.onSurfaceVariant,
-            ),
+            style: TextStyle(fontSize: 11.5, color: scheme.onSurfaceVariant),
           ),
         ],
       ),
@@ -4243,9 +5096,7 @@ List<Widget> _spaced(
   final result = <Widget>[];
   for (var index = 0; index < children.length; index++) {
     if (index > 0) {
-      result.add(
-        horizontal ? SizedBox(width: gap) : SizedBox(height: gap),
-      );
+      result.add(horizontal ? SizedBox(width: gap) : SizedBox(height: gap));
     }
     result.add(children[index]);
   }

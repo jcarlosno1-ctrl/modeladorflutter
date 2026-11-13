@@ -87,6 +87,7 @@ class WidgetDefinition {
     required this.builder,
     this.acceptsChildren = false,
     this.insertable = true,
+    this.requiresFlexParent = false,
     this.slot = ComponentSlot.body,
     this.flutterClass,
   });
@@ -113,6 +114,9 @@ class WidgetDefinition {
   /// pestañas, no arrastrándola al lienzo.
   final bool insertable;
 
+  /// Si solo puede vivir dentro de una `Row` o `Column` (Expanded, Spacer…).
+  final bool requiresFlexParent;
+
   /// Dónde vive dentro de la pantalla.
   final ComponentSlot slot;
 
@@ -129,6 +133,23 @@ class WidgetDefinition {
   Map<String, Object?> get defaultProperties => {
     for (final property in properties) property.key: property.defaultValue,
   };
+
+  /// Copia la definición cambiando solo las propiedades.
+  WidgetDefinition copyWith({List<PropertySpec>? properties}) {
+    return WidgetDefinition(
+      type: type,
+      label: label,
+      category: category,
+      icon: icon,
+      properties: properties ?? this.properties,
+      builder: builder,
+      acceptsChildren: acceptsChildren,
+      insertable: insertable,
+      requiresFlexParent: requiresFlexParent,
+      slot: slot,
+      flutterClass: flutterClass,
+    );
+  }
 
   /// Esquema de la propiedad [key], si existe.
   PropertySpec? propertyFor(String key) {

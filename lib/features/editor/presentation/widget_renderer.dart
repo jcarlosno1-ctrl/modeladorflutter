@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../../../app/app_theme.dart';
 import '../catalog/color_value.dart';
 import '../catalog/component_catalog.dart';
 import '../catalog/standard_catalog.dart';
@@ -112,8 +113,41 @@ class WidgetRenderer extends StatelessWidget {
       }
     }
 
+    // La alineación del ícono se aplica en el cuerpo para que coincida con
+    // el código exportado (el ícono por sí solo se estira en la columna).
+    Widget alignBody(CanvasNode node, Widget widget) {
+      final definition = activeCatalog[node.type];
+      if (definition == null) {
+        return widget;
+      }
+      final widthSpec = definition.propertyFor('widthMode');
+      if (widthSpec == null) {
+        return widget;
+      }
+      final widthMode = widthSpec.coerce(node.properties['widthMode']);
+      if (widthMode != 'fit') {
+        return widget;
+      }
+      final alignSpec =
+          definition.propertyFor('bodyAlignment') ??
+          (node.type == 'icon' ? definition.propertyFor('alignment') : null);
+      final value = alignSpec == null
+          ? 'start'
+          : alignSpec.coerce(node.properties[alignSpec.key]);
+      final alignment = switch (value) {
+        'center' => Alignment.center,
+        'end' => Alignment.centerRight,
+        _ => Alignment.centerLeft,
+      };
+      final child = definition.acceptsChildren
+          ? widget
+          : IntrinsicWidth(child: widget);
+      return Align(alignment: alignment, heightFactor: 1, child: child);
+    }
+
     final bodyWidgets = [
-      for (final child in body) _build(context, child, depth + 1),
+      for (final child in body)
+        alignBody(child, _build(context, child, depth + 1)),
     ];
     final theme = Theme.of(context);
     final isEmpty = bodyWidgets.isEmpty;
@@ -212,10 +246,13 @@ class WidgetRenderer extends StatelessWidget {
     BuildContext context,
     CanvasNode node,
     Map<String, Object?> values,
-    ComponentCatalog activeCatalog,
-  ) {
+    ComponentCatalog activeCatalog, {
+    ValueChanged<CanvasNode>? onNodeTap,
+    String? selectedNodeId,
+  }) {
     final scheme = Theme.of(context).colorScheme;
-    final items = <BottomNavigationBarItem>[];
+    final destinations = <Widget>[];
+    final itemMessages = <String>[];
 
     for (final child in node.children) {
       if (child.type != 'icon' && child.type != 'navItem') {
@@ -229,15 +266,97 @@ class WidgetRenderer extends StatelessWidget {
         for (final spec in definition.properties)
           spec.key: spec.coerce(child.properties[spec.key]),
       };
-      items.add(
-        BottomNavigationBarItem(
-          icon: Icon(iconDataFor(childValues['icon'] as String? ?? 'home')),
-          label: childValues['label'] as String? ?? '',
+      final iconName = childValues['icon'] as String? ?? 'home';
+      final selectedName = childValues['selectedIcon'] as String? ?? '';
+      final label = childValues['label'] as String? ?? '';
+      final showLabel = childValues['showLabel'] as bool? ?? true;
+      final tooltip = childValues['tooltip'] as String? ?? '';
+      final semantic = childValues['semanticLabel'] as String? ?? '';
+      final enabled = childValues['enabled'] as bool? ?? true;
+      final iconSize = (childValues['size'] as num?)?.toDouble() ?? 24;
+      final fill = (childValues['fill'] as num?)?.toDouble() ?? 0;
+      final shadow = childValues['shadow'] == true;
+      final shadowColorValue = childValues['shadowColor'] as String? ?? '';
+      final shadowColor = shadowColorValue.isEmpty ||
+              shadowColorValue == 'inherit'
+          ? scheme.onSurface
+          : colorForValue(shadowColorValue, scheme);
+      final textDirection = childValues['textDirection'] == 'rtl'
+          ? TextDirection.rtl
+          : TextDirection.ltr;
+      final action = childValues['onAction'];
+      final message = childValues['actionMessage'] as String? ??
+          childValues['eventMessage'] as String? ??
+          '';
+      itemMessages.add(
+        action == 'message' ? message : '',
+      );
+
+      Color? iconColor(String key) {
+        final value = childValues[key] as String? ?? 'inherit';
+        if (value.isEmpty || value == 'inherit') {
+          return null;
+        }
+        return colorForValue(value, scheme);
+      }
+
+      Widget buildIcon(String name, Color? color) {
+        Widget icon = Icon(
+          iconDataFor(name),
+          size: iconSize,
+          color: color,
+          fill: fill > 0 ? fill.clamp(0, 1) : null,
+          textDirection: textDirection,
+          shadows: shadow
+              ? [
+                  BoxShadow(
+                    color: shadowColor,
+                    blurRadius:
+                        (childValues['shadowBlur'] as num?)?.toDouble() ?? 8,
+                    offset: Offset(
+                      (childValues['shadowOffsetX'] as num?)?.toDouble() ?? 4,
+                      (childValues['shadowOffsetY'] as num?)?.toDouble() ?? 4,
+                    ),
+                  ),
+                ]
+              : null,
+          semanticLabel: semantic.isEmpty ? null : semantic,
+        );
+        if (child.id == selectedNodeId) {
+          icon = Container(
+            padding: const EdgeInsets.all(2),
+            decoration: BoxDecoration(
+              border: Border.all(color: AppTheme.selection, width: 2),
+              borderRadius: BorderRadius.circular(8),
+            ),
+            child: icon,
+          );
+        }
+        if (onNodeTap != null) {
+          icon = GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onTap: () => onNodeTap(child),
+            child: icon,
+          );
+        }
+        return icon;
+      }
+
+      destinations.add(
+        NavigationDestination(
+          icon: buildIcon(iconName, iconColor('color')),
+          selectedIcon: buildIcon(
+            selectedName.isEmpty ? iconName : selectedName,
+            iconColor('selectedColor') ?? iconColor('color'),
+          ),
+          label: showLabel ? label : '',
+          tooltip: tooltip.isEmpty ? null : tooltip,
+          enabled: enabled,
         ),
       );
     }
 
-    if (items.isEmpty) {
+    if (destinations.isEmpty) {
       // Compatibilidad con pantallas viejas que guardaban solo la cantidad.
       final fallback = int.tryParse(
         node.properties['items']?.toString() ?? '3',
@@ -251,13 +370,26 @@ class WidgetRenderer extends StatelessWidget {
         Icons.person,
       ];
       for (var index = 0; index < fallback; index++) {
-        items.add(
-          BottomNavigationBarItem(
+        destinations.add(
+          NavigationDestination(
             icon: Icon(icons[index]),
             label: labels[index],
           ),
         );
       }
+    }
+
+    // NavigationBar necesita al menos dos destinos.
+    const minLabels = ['Inicio', 'Buscar'];
+    const minIcons = [Icons.home, Icons.search];
+    while (destinations.length < 2) {
+      final index = destinations.length;
+      destinations.add(
+        NavigationDestination(
+          icon: Icon(minIcons[index]),
+          label: minLabels[index],
+        ),
+      );
     }
 
     Color? colorFor(String key) {
@@ -266,26 +398,99 @@ class WidgetRenderer extends StatelessWidget {
     }
 
     final selected = ((values['selected'] as num?)?.round() ?? 0)
-        .clamp(0, items.length - 1)
+        .clamp(0, destinations.length - 1)
         .toInt();
+    final labelBehavior = switch (values['labelBehavior']) {
+      'onlyShowSelected' => NavigationDestinationLabelBehavior.onlyShowSelected,
+      'alwaysHide' => NavigationDestinationLabelBehavior.alwaysHide,
+      _ => NavigationDestinationLabelBehavior.alwaysShow,
+    };
+    final shape = switch (values['indicatorShape']) {
+      'circle' => const CircleBorder(),
+      'rectangle' => RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(8),
+      ),
+      _ => const StadiumBorder(),
+    };
+    final message = values['eventMessage'] as String? ?? '';
 
-    return BottomNavigationBar(
-      currentIndex: selected,
-      type: values['type'] == 'shifting'
-          ? BottomNavigationBarType.shifting
-          : BottomNavigationBarType.fixed,
-      backgroundColor: colorFor('backgroundColor'),
-      selectedItemColor: colorFor('selectedItemColor'),
-      unselectedItemColor: colorFor('unselectedItemColor'),
-      elevation: (values['elevation'] as num?)?.toDouble() ?? 8,
-      iconSize: (values['iconSize'] as num?)?.toDouble() ?? 24,
-      selectedFontSize:
-          (values['selectedFontSize'] as num?)?.toDouble() ?? 14,
-      unselectedFontSize:
-          (values['unselectedFontSize'] as num?)?.toDouble() ?? 12,
-      showSelectedLabels: values['showSelectedLabels'] as bool? ?? true,
-      showUnselectedLabels: values['showUnselectedLabels'] as bool? ?? true,
-      items: items,
+    Color globalColor(String key, Color fallback) {
+      final value = values[key] as String? ?? '';
+      if (value.isEmpty || value == 'inherit') {
+        return fallback;
+      }
+      return colorForValue(value, scheme);
+    }
+
+    final selectedIconColor = globalColor(
+      'selectedIconColor',
+      scheme.primary,
+    );
+    final unselectedIconColor = globalColor(
+      'unselectedIconColor',
+      scheme.onSurfaceVariant,
+    );
+    final selectedLabelColor = globalColor(
+      'selectedLabelColor',
+      scheme.primary,
+    );
+    final unselectedLabelColor = globalColor(
+      'unselectedLabelColor',
+      scheme.onSurfaceVariant,
+    );
+
+    return NavigationBarTheme(
+      data: NavigationBarThemeData(
+        iconTheme: WidgetStateProperty.resolveWith((states) {
+          final active = states.contains(WidgetState.selected);
+          return IconThemeData(
+            color: active ? selectedIconColor : unselectedIconColor,
+          );
+        }),
+        labelTextStyle: WidgetStateProperty.resolveWith((states) {
+          final active = states.contains(WidgetState.selected);
+          return TextStyle(
+            fontSize: 12,
+            fontWeight: active ? FontWeight.w600 : FontWeight.w500,
+            color: active ? selectedLabelColor : unselectedLabelColor,
+          );
+        }),
+      ),
+      child: NavigationBar(
+        selectedIndex: selected,
+        destinations: destinations,
+        backgroundColor: colorFor('backgroundColor'),
+        indicatorColor: colorFor('indicatorColor'),
+        height: (values['height'] as num?)?.toDouble() ?? 80,
+        elevation: (values['elevation'] as num?)?.toDouble() ?? 8,
+        shadowColor: colorFor('shadowColor'),
+        indicatorShape: shape,
+        labelBehavior: labelBehavior,
+        animationDuration: Duration(
+          milliseconds:
+              ((values['animationDuration'] as num?)?.round() ?? 500).clamp(
+                100,
+                2000,
+              ),
+        ),
+        onDestinationSelected: (index) {
+          final itemMessage = index < itemMessages.length
+              ? itemMessages[index]
+              : '';
+          final activeMessage = itemMessage.isNotEmpty
+              ? itemMessage
+              : (values['onChangeAction'] == 'message' ? message : '');
+          if (activeMessage.isNotEmpty) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: Text(
+                  activeMessage.isEmpty ? 'Destino cambiado' : activeMessage,
+                ),
+              ),
+            );
+          }
+        },
+      ),
     );
   }
 
@@ -412,16 +617,30 @@ class WidgetRenderer extends StatelessWidget {
         current,
         values,
         activeCatalog,
+        onNodeTap: onNodeTap,
+        selectedNodeId: selectedNodeId,
       ),
       _ => definition.builder(context, Props(values), children),
     };
+    // Expanded/Flexible/Spacer deben ser hijos directos de Row/Column: no se
+    // pueden envolver en decoraciones de selección o DragTarget.
+    if (definition.type == 'expanded' ||
+        definition.type == 'flexible' ||
+        definition.type == 'spacer') {
+      return built;
+    }
     final isSelected = current.id == selectedNodeId;
 
     // En modo edición, los componentes hoja (botón, campo, ícono…) no deben
     // consumir el toque: si no, su InkWell gana la arena de gestos y el nodo
     // nunca se selecciona. Los contenedores NO se absorben para que sus hijos
     // sigan siendo seleccionables.
-    final content = (onNodeTap != null && !definition.acceptsChildren)
+    // Las barras se seleccionan como un widget más: en modo edición su
+    // contenido no debe consumir el toque.
+    final shouldAbsorb =
+        onNodeTap != null &&
+        (!definition.acceptsChildren || definition.type == 'appBar');
+    final content = shouldAbsorb
         ? AbsorbPointer(child: built)
         : built;
 
@@ -434,10 +653,17 @@ class WidgetRenderer extends StatelessWidget {
               decoration: isSelected
                   ? BoxDecoration(
                       border: Border.all(
-                        color: Theme.of(context).colorScheme.primary,
-                        width: 2,
+                        color: AppTheme.selection,
+                        width: 2.5,
                       ),
                       borderRadius: BorderRadius.circular(6),
+                      boxShadow: [
+                        BoxShadow(
+                          color: AppTheme.selection.withValues(alpha: 0.35),
+                          blurRadius: 8,
+                          spreadRadius: 1,
+                        ),
+                      ],
                     )
                   : const BoxDecoration(),
               child: content,

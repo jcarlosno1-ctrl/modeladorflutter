@@ -210,6 +210,7 @@ class EditorSession extends Notifier<EditorState> {
       return;
     }
 
+    _recordHistory();
     final updated = root.withProperty(nodeId, key, value);
     if (identical(updated, root)) {
       return;
@@ -242,8 +243,12 @@ class EditorSession extends Notifier<EditorState> {
       return;
     }
     final targetNode = root.findNode(targetId);
-    if (targetNode != null) {
-      final targetSlot =
+    if (standardCatalog[dragged.type]?.requiresFlexParent ?? false) {
+      if (!_canHostFlex(root, targetId)) {
+        return;
+      }
+    }
+    if (targetNode != null) {      final targetSlot =
           standardCatalog[targetNode.type]?.slot ?? ComponentSlot.body;
       // Un ítem de navegación solo puede vivir dentro de la barra inferior.
       if (dragged.type == 'navItem' && targetSlot != ComponentSlot.bottom) {
@@ -390,6 +395,94 @@ class EditorSession extends Notifier<EditorState> {
     await save();
   }
 
+  /// Agrega un destino al final de la barra inferior (máximo 6).
+  Future<void> addDestination() async {
+    final root = state.root;
+    if (root == null) {
+      return;
+    }
+    CanvasNode? bar;
+    for (final child in root.children) {
+      if (child.type == 'bottomNav') {
+        bar = child;
+      }
+    }
+    if (bar == null || bar.children.length >= 6) {
+      return;
+    }
+    _recordHistory();
+    const labels = ['Inicio', 'Buscar', 'Favorito', 'Perfil', 'Ajustes', 'Más'];
+    const icons = [
+      'home',
+      'search',
+      'favorite',
+      'person',
+      'settings',
+      'more_vert',
+    ];
+    // Si la barra viene vacía, siembra dos destinos para que sea válida.
+    final count = bar.children.isEmpty ? 2 : 1;
+    var updated = root;
+    CanvasNode? last;
+    for (var step = 0; step < count; step++) {
+      if (bar.children.length + step >= 6) {
+        break;
+      }
+      final number = bar.children.length + step + 1;
+      final index = (number - 1) % labels.length;
+      final destination = CanvasNode(
+        id: _newId(),
+        type: 'icon',
+        properties: {'icon': icons[index], 'label': labels[index]},
+      );
+      final next = updated.appendChild(bar.id, destination);
+      if (next == null) {
+        break;
+      }
+      updated = next;
+      last = destination;
+    }
+    if (last == null) {
+      return;
+    }
+    state = state.copyWith(
+      root: updated,
+      isDirty: true,
+      selectedNodeId: last.id,
+      clearError: true,
+    );
+    await save();
+  }
+
+  /// Quita el último destino (mínimo 2).
+  Future<void> removeLastDestination() async {
+    final root = state.root;
+    if (root == null) {
+      return;
+    }
+    CanvasNode? bar;
+    for (final child in root.children) {
+      if (child.type == 'bottomNav') {
+        bar = child;
+      }
+    }
+    if (bar == null || bar.children.length <= 2) {
+      return;
+    }
+    _recordHistory();
+    final updated = root.removeById(bar.children.last.id);
+    if (updated == null) {
+      return;
+    }
+    state = state.copyWith(
+      root: updated,
+      isDirty: true,
+      clearSelection: true,
+      clearError: true,
+    );
+    await save();
+  }
+
   /// Guarda el tema del proyecto y lo refleja en el estado.
   Future<void> saveTheme(ProjectTheme theme) async {
     final projectId = state.projectId;
@@ -436,10 +529,11 @@ class EditorSession extends Notifier<EditorState> {
             await _createDefaultScreen(project, repository);
             return;
           }
-          final screen = value.first;
+          final ordered = _initialFirst(value);
+          final screen = ordered.first;
           state = EditorState(
             projectId: project.id,
-            screens: value,
+            screens: ordered,
             screenId: screen.id,
             screenName: screen.name,
             root: _normalizeRoot(screen.canvas ?? _defaultRoot()),
@@ -454,8 +548,104 @@ class EditorSession extends Notifier<EditorState> {
     }
   }
 
-  /// Migra raíces antiguas (`column`/`container`) al nodo `screen`.
-  ///
+  /// Pantallas con la inicial primero; conserva el resto del orden.
+  List<ProjectScreen> _initialFirst(List<ProjectScreen> screens) {
+    ProjectScreen? initial;
+    for (final screen in screens) {
+      if (screen.canvas?.properties['initial'] == true) {
+        initial = screen;
+        break;
+      }
+    }
+    if (initial == null) {
+      return screens;
+    }
+    return [
+      initial,
+      for (final screen in screens)
+        if (screen.id != initial.id) screen,
+    ];
+  }
+
+  /// Marca una pantalla como inicial y la mueve al primer lugar.
+  Future<void> setInitialScreen(String screenId, bool value) async {
+    final root = state.root;
+    if (root == null || state.screenId != screenId) {
+      return;
+    }
+    _recordHistory();
+    final updated = root.withProperty(root.id, 'initial', value);
+    var screens = <ProjectScreen>[
+      for (final screen in state.screens)
+        if (screen.id == screenId)
+          ProjectScreen(
+            id: screen.id,
+            projectId: screen.projectId,
+            name: screen.name,
+            position: screen.position,
+            canvas: updated,
+          )
+        else
+          screen,
+    ];
+    if (value) {
+      final current = screens.firstWhere((screen) => screen.id == screenId);
+      screens = [
+        current,
+        for (final screen in screens)
+          if (screen.id != screenId) screen,
+      ];
+    }
+    state = state.copyWith(
+      root: updated,
+      screens: screens,
+      isDirty: true,
+      clearError: true,
+    );
+    await save();
+    if (value) {
+      await _clearInitialFlagsExcept(screenId);
+    }
+  }
+
+  Future<void> _clearInitialFlagsExcept(String screenId) async {
+    final repository = ref.read(projectScreenRepositoryProvider);
+    final changed = <ProjectScreen>[];
+    for (final screen in state.screens) {
+      if (screen.id == screenId) {
+        continue;
+      }
+      final canvas = screen.canvas;
+      if (canvas == null || canvas.properties['initial'] != true) {
+        continue;
+      }
+      final cleared = canvas.withProperty(canvas.id, 'initial', false);
+      final updated = ProjectScreen(
+        id: screen.id,
+        projectId: screen.projectId,
+        name: screen.name,
+        position: screen.position,
+        canvas: cleared,
+      );
+      changed.add(updated);
+      try {
+        await repository.saveCanvas(screenId: screen.id, root: cleared);
+      } on Object {
+        // La limpieza visual no debe bloquear el cambio de pantalla inicial.
+      }
+    }
+    if (changed.isEmpty) {
+      return;
+    }
+    final byId = {for (final screen in changed) screen.id: screen};
+    state = state.copyWith(
+      screens: [
+        for (final screen in state.screens) byId[screen.id] ?? screen,
+      ],
+    );
+  }
+
+  /// Migra raíces antiguas (`column`/`container`) al nodo `screen`.  ///
   /// Conserva hijos y `gap` para no alterar el diseño existente. Las pantallas
   /// nuevas ya nacen con `screen`.
   CanvasNode _normalizeRoot(CanvasNode root) {
@@ -545,6 +735,31 @@ class EditorSession extends Notifier<EditorState> {
 
   /// Crea una pantalla nueva y la activa.
   Future<void> createScreen() async {
+    final name = 'pantalla_${state.screens.length + 1}.dart';
+    await _createScreen(name: name, root: _defaultRoot());
+  }
+
+  /// Crea una pantalla nueva a partir de una plantilla.
+  Future<void> createScreenFromTemplate({
+    required String name,
+    required CanvasNode root,
+  }) async {
+    var candidate = name;
+    var suffix = 2;
+    while (state.screens.any(
+      (screen) => screen.name.toLowerCase() == candidate.toLowerCase(),
+    )) {
+      final base = name.replaceAll('.dart', '');
+      candidate = '${base}_$suffix.dart';
+      suffix++;
+    }
+    await _createScreen(name: candidate, root: root);
+  }
+
+  Future<void> _createScreen({
+    required String name,
+    required CanvasNode root,
+  }) async {
     final projectId = state.projectId;
     if (projectId == null) {
       return;
@@ -561,19 +776,20 @@ class EditorSession extends Notifier<EditorState> {
                   .reduce((a, b) => a > b ? a : b) +
               1;
 
-    final root = _defaultRoot();
     final result = await ref
         .read(projectScreenRepositoryProvider)
         .create(
           projectId: projectId,
-          name: 'pantalla_${state.screens.length + 1}.dart',
+          name: name,
           position: position,
           root: root,
         );
 
     state = switch (result) {
       Ok(:final value) => state.copyWith(
-        screens: [...state.screens, value],
+        screens: root.properties['initial'] == true
+            ? [value, ...state.screens]
+            : [...state.screens, value],
         screenId: value.id,
         screenName: value.name,
         root: root,
@@ -583,6 +799,9 @@ class EditorSession extends Notifier<EditorState> {
       ),
       Err(:final failure) => state.copyWith(error: failure.message),
     };
+    if (root.properties['initial'] == true && state.screenId != null) {
+      await _clearInitialFlagsExcept(state.screenId!);
+    }
   }
 
   /// Agrega un componente al final del árbol y lo persiste.
@@ -634,6 +853,9 @@ class EditorSession extends Notifier<EditorState> {
     }
     final definition = standardCatalog[type];
     if (definition == null || !definition.insertable) {
+      return;
+    }
+    if (definition.requiresFlexParent && !_canHostFlex(root, targetId)) {
       return;
     }
 
@@ -701,9 +923,36 @@ class EditorSession extends Notifier<EditorState> {
     state = state.copyWith(root: updated, isDirty: true, clearError: true);
   }
 
-  /// Coloca [node] dentro de [targetId] si es un contenedor; si no, antes de él.
-  CanvasNode? _place(CanvasNode root, String targetId, CanvasNode node) {
+  bool _isFlexType(String type) => type == 'row' || type == 'column';
+
+  CanvasNode? _parentOf(CanvasNode node, String id) {
+    for (final child in node.children) {
+      if (child.id == id) {
+        return node;
+      }
+      final found = _parentOf(child, id);
+      if (found != null) {
+        return found;
+      }
+    }
+    return null;
+  }
+
+  /// `true` si [targetId] puede hospedar Expanded/Flexible/Spacer.
+  bool _canHostFlex(CanvasNode root, String targetId) {
     final target = root.findNode(targetId);
+    if (target != null) {
+      final definition = standardCatalog[target.type];
+      if (definition != null && definition.acceptsChildren) {
+        return _isFlexType(target.type);
+      }
+    }
+    final parent = _parentOf(root, targetId);
+    return parent != null && _isFlexType(parent.type);
+  }
+
+  /// Coloca [node] dentro de [targetId] si es un contenedor; si no, antes de él.
+  CanvasNode? _place(CanvasNode root, String targetId, CanvasNode node) {    final target = root.findNode(targetId);
     if (target != null &&
         (standardCatalog[target.type]?.acceptsChildren ?? false)) {
       return root.appendChild(targetId, node);
